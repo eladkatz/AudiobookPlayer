@@ -23,7 +23,8 @@ The app follows a **Model-View-ViewModel (MVVM)** pattern with manager classes h
                      ▼
 ┌─────────────────────────────────────────────────────────┐
 │                   Observable Managers                    │
-│  (AudioManager, GoogleDriveManager, AppState)           │
+│  (AudioManager, GoogleDriveManager, CoverImageManager,   │
+│   AppState)                                              │
 └────────────────────┬────────────────────────────────────┘
                      │ Uses
                      ▼
@@ -54,6 +55,7 @@ The app follows a **Model-View-ViewModel (MVVM)** pattern with manager classes h
 
 **Key Methods**:
 - `loadInitialData()`: Loads books, settings, and current book from persistence
+  - Also triggers `CoverImageManager.retryFailedDownloads()` to retry cover downloads for books without covers
 
 ### 2. Models
 
@@ -94,6 +96,9 @@ The app follows a **Model-View-ViewModel (MVVM)** pattern with manager classes h
   - `skipBackwardInterval: TimeInterval`
   - `sleepTimerEnabled: Bool`
   - `sleepTimerDuration: TimeInterval`
+  - `simulateChapters: Bool` - Whether to generate simulated chapters for books without CUE files
+  - `simulatedChapterLength: TimeInterval` - Length of simulated chapters in seconds (default: 900 = 15 minutes)
+- **Custom Codable**: Implements backward compatibility for new fields using `decodeIfPresent` with defaults
 
 #### `AppState`
 - **Location**: `AudioBookPlayer/Models/Models.swift`
@@ -125,11 +130,14 @@ The app follows a **Model-View-ViewModel (MVVM)** pattern with manager classes h
   - Creates `AVPlayerItem` and `AVPlayer`
   - Sets up time observers
   - Handles security-scoped resource access
+  - Generates simulated chapters if no CUE file exists and simulation is enabled
 - `play()`: Starts playback
 - `pause()`: Pauses playback
 - `seek(to time: TimeInterval)`: Seeks to specific time
 - `setPlaybackSpeed(_ speed: Double)`: Adjusts playback speed
 - `skipForward()` / `skipBackward()`: Skips by configured intervals
+- `nextChapter()` / `previousChapter()`: Navigate between chapters
+- `generateSimulatedChapters(duration:chapterLength:)`: Creates evenly-spaced chapters based on duration
 
 **Internal State**:
 - `player: AVPlayer?` - AVFoundation player instance
@@ -170,12 +178,40 @@ The app follows a **Model-View-ViewModel (MVVM)** pattern with manager classes h
   - `importBook(from url: URL)`: Imports M4B file from local storage
     - Copies file to app's Documents/Books directory
     - Extracts duration from audio file
+    - Automatically searches and downloads cover image if not present
     - Creates `Book` object
   - `importBookFromGoogleDriveM4B(m4bFileID:folderID:)`: Imports from Google Drive
     - Downloads M4B and related files
     - Creates book directory structure
+    - Automatically searches and downloads cover image if not present
     - Returns `Book` object
   - `getBooksDirectory()`: Returns path to Books directory
+
+#### `CoverImageManager`
+- **Location**: `AudioBookPlayer/Managers/CoverImageManager.swift`
+- **Type**: Singleton (`ObservableObject`)
+- **Purpose**: Manages automatic cover image search and download from Google Books API
+- **Key Properties**:
+  - `@Published var isSearching: Bool` - Whether a cover search is in progress
+  - `@Published var searchingBookID: UUID?` - ID of book currently being searched
+  - `coversDirectory: URL` - Path to `Documents/Covers/` directory
+
+**Key Methods**:
+- `searchAndDownloadCover(for book: Book) async -> URL?`: Searches Google Books API and downloads cover
+  - Cleans book title (removes brackets, ASINs, etc.)
+  - Searches using title and author
+  - Converts HTTP image URLs to HTTPS for App Transport Security
+  - Downloads and saves image as JPEG
+  - Returns local file URL or nil if not found
+- `retryFailedDownloads(for books: [Book]) async -> [UUID: URL]`: Retries cover downloads on app launch
+  - Filters books without covers
+  - Downloads with rate limiting (0.5s delay between requests)
+  - Returns dictionary mapping book IDs to cover URLs
+
+**State Management**:
+- Uses synchronous state resets to prevent race conditions
+- Resets `isSearching` and `searchingBookID` before function returns
+- Checks `searchingBookID == book.id` before resetting to prevent cross-book interference
 
 #### `PersistenceManager`
 - **Location**: `AudioBookPlayer/Managers/PersistenceManager.swift`
@@ -185,7 +221,7 @@ The app follows a **Model-View-ViewModel (MVVM)** pattern with manager classes h
   - `saveBooks(_ books: [Book])`: Saves books array
   - `loadBooks() -> [Book]`: Loads books array
   - `saveSettings(_ settings: PlaybackSettings)`: Saves settings
-  - `loadSettings() -> PlaybackSettings`: Loads settings
+  - `loadSettings() -> PlaybackSettings`: Loads settings (with backward compatibility)
   - `saveCurrentBookID(_ bookID: UUID?)`: Saves current book ID
   - `loadCurrentBookID() -> UUID?`: Loads current book ID
   - `savePosition(for bookID: UUID, position: TimeInterval)`: Saves playback position
@@ -231,10 +267,14 @@ The app follows a **Model-View-ViewModel (MVVM)** pattern with manager classes h
   - Progress slider
   - Time display
   - Speed control
+  - Chapter navigation (next/previous)
+  - Chapter list with current chapter indicator
+  - Cover art display with "Searching for cover..." indicator
   - Error display
 - **Observations**:
-  - Observes `AudioManager` for playback state
+  - Observes `AudioManager` for playback state and chapters
   - Observes `AppState` for current book
+  - Observes `CoverImageManager` for cover search progress
 
 #### `SettingsView`
 - **Location**: `AudioBookPlayer/Views/SettingsView.swift`
@@ -242,7 +282,9 @@ The app follows a **Model-View-ViewModel (MVVM)** pattern with manager classes h
 - **Features**:
   - Playback speed adjustment
   - Skip interval configuration
+  - Chapter simulation toggle and chapter length picker
   - Sleep timer settings (UI ready, functionality pending)
+  - Storage information (total books, downloaded books)
 
 #### `GoogleDrivePickerView`
 - **Location**: `AudioBookPlayer/Views/GoogleDrivePickerView.swift`
@@ -278,7 +320,11 @@ BookFileManager.importBook(from: URL)
     │
     ├─→ Copies file to Documents/Books/
     ├─→ Extracts duration from AVAsset
-    └─→ Creates Book object
+    ├─→ CoverImageManager.searchAndDownloadCover() (if no cover)
+    │   ├─→ Searches Google Books API
+    │   ├─→ Downloads cover image
+    │   └─→ Saves to Documents/Covers/{bookID}.jpg
+    └─→ Creates Book object (with coverImageURL if found)
     │
     ▼
 AppState.books.append(book)
@@ -312,7 +358,11 @@ BookFileManager.importBookFromGoogleDriveM4B()
     │   ├─→ Finds related files (CUE, JPG, NFO)
     │   └─→ Downloads all related files
     ├─→ Extracts duration
-    └─→ Creates Book object
+    ├─→ CoverImageManager.searchAndDownloadCover() (if no cover from Drive)
+    │   ├─→ Searches Google Books API
+    │   ├─→ Downloads cover image
+    │   └─→ Saves to Documents/Covers/{bookID}.jpg
+    └─→ Creates Book object (with coverImageURL if found)
     │
     ▼
 AppState.books.append(book)
@@ -345,14 +395,41 @@ AudioManager.loadBook(book)
     ├─→ Creates AVPlayerItem
     ├─→ Creates AVPlayer
     ├─→ Sets up time observer
+    ├─→ Loads duration and parses chapters
+    │   ├─→ If no chapters found and simulateChapters enabled
+    │   └─→ Generates simulated chapters based on duration
     └─→ Updates @Published properties
     │
     ▼
 PlayerView updates UI
     │
-    ├─→ Shows book info
+    ├─→ Shows book info and cover art
     ├─→ Shows playback controls
-    └─→ Displays current time
+    ├─→ Displays current time
+    └─→ Shows chapter list (real or simulated)
+```
+
+### App Launch Flow
+
+```
+App Launch (AudioBookPlayerApp)
+    │
+    ▼
+loadInitialData()
+    │
+    ├─→ PersistenceManager.loadBooks()
+    ├─→ PersistenceManager.loadSettings()
+    ├─→ PersistenceManager.loadCurrentBookID()
+    ├─→ PersistenceManager.loadPosition() (for current book)
+    └─→ Task: CoverImageManager.retryFailedDownloads()
+        │
+        ├─→ Filters books without covers
+        ├─→ For each book: searchAndDownloadCover()
+        │   ├─→ Searches Google Books API
+        │   └─→ Downloads cover if found
+        └─→ Updates AppState.books with new covers
+            │
+            └─→ PersistenceManager.saveBooks()
 ```
 
 ### Position Tracking Flow
@@ -385,6 +462,7 @@ AppState
 AudioManager
   │
   ├─→ Uses AVFoundation (AVPlayer, AVPlayerItem)
+  ├─→ Uses PersistenceManager (loads settings for chapter simulation)
   └─→ Observed by PlayerView
 
 GoogleDriveManager
@@ -397,7 +475,14 @@ BookFileManager
   │
   ├─→ Uses FileManager (file operations)
   ├─→ Uses AVFoundation (duration extraction)
-  └─→ Uses GoogleDriveManager (for Drive imports)
+  ├─→ Uses GoogleDriveManager (for Drive imports)
+  └─→ Uses CoverImageManager (for automatic cover download)
+
+CoverImageManager
+  │
+  ├─→ Uses URLSession (for Google Books API and image downloads)
+  ├─→ Uses UIKit (UIImage for image processing)
+  └─→ Observed by PlayerView (for search progress)
 
 PersistenceManager
   │
@@ -429,6 +514,7 @@ AudioBookPlayerApp
 - Managers that need to update UI are `ObservableObject`
 - Views observe them using `@ObservedObject` or `@StateObject`
 - Changes to `@Published` properties trigger UI updates
+- Examples: `AudioManager`, `GoogleDriveManager`, `CoverImageManager`, `AppState`
 
 ### 3. MVVM Pattern
 - **Models**: Data structures (Book, Chapter, etc.)
@@ -439,6 +525,12 @@ AudioBookPlayerApp
 - `AppState` injected via `@EnvironmentObject`
 - Managers accessed via singleton pattern
 - Makes testing easier (can mock managers)
+
+### 5. Async/Await Pattern
+- Modern Swift concurrency for network operations
+- `async/await` used throughout for file downloads, API calls
+- `@MainActor` ensures UI updates happen on main thread
+- Synchronous state resets prevent race conditions
 
 ## Threading Model
 
@@ -462,12 +554,13 @@ AudioBookPlayerApp
 
 - **UserDefaults**: Used for all app data
   - Books array (JSON encoded)
-  - Settings (JSON encoded)
+  - Settings (JSON encoded with backward compatibility)
   - Current book ID
   - Playback positions (per book)
 - **File System**: 
   - Books stored in `Documents/Books/`
   - Google Drive books in subdirectories: `Documents/Books/{folderID}/`
+  - Cover images stored in `Documents/Covers/{bookID}.jpg`
   - Files organized by import source
 
 ## Security Considerations

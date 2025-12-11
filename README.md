@@ -8,10 +8,12 @@ A modern iOS audiobook player app built with SwiftUI, featuring local file impor
 - 🎵 **Audio Playback**: Full-featured audio player with playback controls
 - ⏯️ **Playback Controls**: Play, pause, skip forward/backward, speed control
 - 📍 **Position Tracking**: Automatically saves and restores playback position
+- 📖 **Chapter Navigation**: Navigate by chapters with next/previous controls
+- 🔄 **Simulated Chapters**: Automatically generate chapters for books without CUE files (configurable length)
 - ☁️ **Google Drive Integration**: Import audiobooks directly from Google Drive
 - 📁 **Local File Import**: Import M4B files from your device
-- 🖼️ **Cover Art Support**: Display book cover images
-- ⚙️ **Customizable Settings**: Adjust playback speed, skip intervals, and more
+- 🖼️ **Automatic Cover Art**: Automatically searches and downloads book covers from Google Books API
+- ⚙️ **Customizable Settings**: Adjust playback speed, skip intervals, chapter simulation, and more
 - 💾 **Persistent Storage**: All data is saved locally and persists between app launches
 
 ## Requirements
@@ -64,6 +66,7 @@ AudioBookPlayer/
 │   │   ├── AudioManager.swift      # Audio playback management
 │   │   ├── FileManager.swift       # File import and management
 │   │   ├── GoogleDriveManager.swift # Google Drive integration
+│   │   ├── CoverImageManager.swift  # Automatic cover image search and download
 │   │   └── PersistenceManager.swift # Data persistence
 │   ├── Views/
 │   │   ├── LibraryView.swift       # Book library
@@ -99,6 +102,8 @@ Manages audio playback using AVFoundation. Handles:
 - Playback controls (play, pause, seek)
 - Time tracking and position updates
 - Playback speed adjustment
+- Chapter navigation (next/previous)
+- Simulated chapter generation for books without CUE files
 - Error handling
 
 ### GoogleDriveManager
@@ -114,6 +119,15 @@ Manages book files:
 - Importing from Google Drive
 - File organization in app's Documents directory
 - Duration extraction from audio files
+- Automatic cover image search during import
+
+### CoverImageManager
+Handles automatic cover image discovery:
+- Searches Google Books API using book title and author
+- Downloads cover images automatically when books are imported
+- Converts HTTP to HTTPS for App Transport Security compliance
+- Retries failed downloads on app launch
+- Caches downloaded covers in `Documents/Covers/` directory
 
 ### PersistenceManager
 Handles data persistence:
@@ -163,6 +177,11 @@ The app supports importing audiobooks directly from Google Drive. To set this up
    - Skip forward/backward (configurable intervals)
    - Adjust playback speed
    - Seek using the progress slider
+   - Navigate chapters using next/previous buttons
+3. **Chapter Navigation**:
+   - Books without CUE files automatically get simulated chapters (default: 15 minutes each)
+   - Configure chapter length in Settings → Chapters
+   - Toggle chapter simulation on/off in Settings
 
 ### Managing Books
 
@@ -212,8 +231,8 @@ This project is open source. See LICENSE file for details.
 
 ## Future Enhancements
 
-- [ ] CUE file parsing for chapter navigation
-- [ ] Sleep timer functionality
+- [ ] CUE file parsing for chapter navigation (currently uses simulated chapters)
+- [ ] Sleep timer functionality (UI ready, implementation pending)
 - [ ] Playlist support
 - [ ] Cloud sync across devices
 - [ ] Widget support
