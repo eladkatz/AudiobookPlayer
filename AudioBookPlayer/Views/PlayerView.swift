@@ -1,0 +1,344 @@
+import SwiftUI
+
+struct PlayerView: View {
+    @ObservedObject var audioManager = AudioManager.shared
+    @ObservedObject var appState: AppState
+    
+    var body: some View {
+        Group {
+            if appState.currentBook != nil {
+                playerContent
+            } else {
+                emptyPlayerView
+            }
+        }
+    }
+    
+    private var playerContent: some View {
+        ZStack {
+            Color(.systemBackground)
+                .ignoresSafeArea(.all, edges: .all)
+            
+            ScrollView {
+                VStack(spacing: 0) {
+                    // Error Message
+                    if let error = audioManager.playbackError {
+                        errorSection(error)
+                    }
+                    
+                    // Cover Art Area
+                    coverArtSection
+                    
+                    // Book Info
+                    bookInfoSection
+                    
+                    // Progress Slider
+                    progressSection
+                    
+                    // Time Display
+                    timeDisplaySection
+                    
+                    // Control Buttons
+                    controlButtonsSection
+                    
+                    // Chapter Navigation
+                    chapterNavigationSection
+                    
+                    // Stop Button
+                    stopButtonSection
+                    
+                    // Bottom padding for scroll
+                    Spacer()
+                        .frame(height: 20)
+                }
+                .padding()
+            }
+        }
+        .onAppear {
+            if let book = appState.currentBook {
+                audioManager.loadBook(book)
+            }
+        }
+    }
+    
+    // MARK: - Error Section
+    private func errorSection(_ error: String) -> some View {
+        VStack(spacing: 8) {
+            HStack {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundColor(.orange)
+                Text(error)
+                    .font(.subheadline)
+                    .foregroundColor(.primary)
+                Spacer()
+            }
+            .padding()
+            .background(Color.orange.opacity(0.1))
+            .cornerRadius(8)
+        }
+        .padding(.horizontal)
+        .padding(.bottom, 10)
+    }
+    
+    private var emptyPlayerView: some View {
+        ZStack {
+            Color(.systemBackground)
+                .ignoresSafeArea(.all, edges: .all)
+            
+            VStack(spacing: 20) {
+                Image(systemName: "play.circle")
+                    .font(.system(size: 60))
+                    .foregroundColor(.gray)
+                
+                Text("No Book Selected")
+                    .font(.title2)
+                    .fontWeight(.semibold)
+                
+                Text("Select a book from your library to start playing")
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal)
+            }
+        }
+    }
+    
+    // MARK: - Cover Art Section
+    private var coverArtSection: some View {
+        VStack {
+            if let coverURL = appState.currentBook?.coverImageURL,
+               let image = UIImage(contentsOfFile: coverURL.path) {
+                Image(uiImage: image)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .frame(maxWidth: 280, maxHeight: 280)
+                    .cornerRadius(12)
+                    .shadow(radius: 10)
+            } else {
+                // Placeholder
+                RoundedRectangle(cornerRadius: 12)
+                    .fill(Color(.systemGray5))
+                    .frame(width: 280, height: 280)
+                    .overlay(
+                        Image(systemName: "book.closed.fill")
+                            .font(.system(size: 60))
+                            .foregroundColor(.gray)
+                    )
+                    .shadow(radius: 10)
+            }
+        }
+        .padding(.top, 20)
+        .padding(.bottom, 30)
+    }
+    
+    // MARK: - Book Info Section
+    private var bookInfoSection: some View {
+        VStack(spacing: 8) {
+            Text(appState.currentBook?.title ?? "No Book Selected")
+                .font(.title2)
+                .fontWeight(.semibold)
+                .multilineTextAlignment(.center)
+                .lineLimit(3)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal)
+            
+            if let author = appState.currentBook?.author {
+                Text(author)
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+            }
+            
+            if let currentChapter = audioManager.chapters[safe: audioManager.currentChapterIndex] {
+                Text(currentChapter.title)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .padding(.top, 4)
+            }
+        }
+        .padding(.bottom, 20)
+    }
+    
+    // MARK: - Progress Section
+    private var progressSection: some View {
+        VStack(spacing: 8) {
+            Slider(
+                value: Binding(
+                    get: { audioManager.currentTime },
+                    set: { audioManager.seek(to: $0) }
+                ),
+                in: 0...max(audioManager.duration, 1)
+            )
+            .accentColor(.blue)
+        }
+        .padding(.horizontal)
+        .padding(.bottom, 8)
+    }
+    
+    // MARK: - Time Display Section
+    private var timeDisplaySection: some View {
+        HStack {
+            Text(formatTime(audioManager.currentTime))
+                .font(.caption)
+                .foregroundColor(.secondary)
+            
+            Spacer()
+            
+            Text(formatTime(audioManager.duration))
+                .font(.caption)
+                .foregroundColor(.secondary)
+        }
+        .padding(.horizontal)
+        .padding(.bottom, 20)
+    }
+    
+    // MARK: - Control Buttons Section
+    private var controlButtonsSection: some View {
+        HStack(spacing: 30) {
+            // Previous Chapter
+            Button(action: {
+                audioManager.previousChapter()
+            }) {
+                Image(systemName: "backward.end.fill")
+                    .font(.title2)
+                    .foregroundColor(audioManager.chapters.isEmpty ? .gray : .primary)
+            }
+            .disabled(audioManager.chapters.isEmpty)
+            
+            // Skip Backward 30s
+            Button(action: {
+                audioManager.skipBackward(interval: appState.playbackSettings.skipBackwardInterval)
+            }) {
+                Image(systemName: "gobackward.30")
+                    .font(.title)
+                    .foregroundColor(.primary)
+            }
+            
+            // Play/Pause
+            Button(action: {
+                if audioManager.isPlaying {
+                    audioManager.pause()
+                } else {
+                    audioManager.play()
+                }
+            }) {
+                Image(systemName: audioManager.isPlaying ? "pause.circle.fill" : "play.circle.fill")
+                    .font(.system(size: 64))
+                    .foregroundColor(.blue)
+            }
+            
+            // Skip Forward 30s
+            Button(action: {
+                audioManager.skipForward(interval: appState.playbackSettings.skipForwardInterval)
+            }) {
+                Image(systemName: "goforward.30")
+                    .font(.title)
+                    .foregroundColor(.primary)
+            }
+            
+            // Next Chapter
+            Button(action: {
+                audioManager.nextChapter()
+            }) {
+                Image(systemName: "forward.end.fill")
+                    .font(.title2)
+                    .foregroundColor(audioManager.chapters.isEmpty ? .gray : .primary)
+            }
+            .disabled(audioManager.chapters.isEmpty)
+        }
+        .padding(.horizontal)
+        .padding(.bottom, 30)
+    }
+    
+    // MARK: - Chapter Navigation Section
+    private var chapterNavigationSection: some View {
+        VStack(spacing: 12) {
+            if !audioManager.chapters.isEmpty {
+                HStack {
+                    Text("Chapters")
+                        .font(.headline)
+                        .foregroundColor(.secondary)
+                    Spacer()
+                }
+                .padding(.horizontal)
+                
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 8) {
+                        ForEach(Array(audioManager.chapters.enumerated()), id: \.element.id) { index, chapter in
+                            Button(action: {
+                                audioManager.seek(to: chapter.startTime)
+                            }) {
+                                HStack {
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text(chapter.title)
+                                            .font(.subheadline)
+                                            .foregroundColor(.primary)
+                                        Text(formatTime(chapter.startTime))
+                                            .font(.caption)
+                                            .foregroundColor(.secondary)
+                                    }
+                                    
+                                    Spacer()
+                                    
+                                    if index == audioManager.currentChapterIndex {
+                                        Image(systemName: "checkmark.circle.fill")
+                                            .foregroundColor(.blue)
+                                    }
+                                }
+                                .padding()
+                                .background(
+                                    index == audioManager.currentChapterIndex
+                                        ? Color.blue.opacity(0.1)
+                                        : Color(.systemGray6)
+                                )
+                                .cornerRadius(8)
+                            }
+                        }
+                    }
+                    .padding(.horizontal)
+                }
+                .frame(maxHeight: 200)
+            }
+        }
+    }
+    
+    // MARK: - Stop Button Section
+    private var stopButtonSection: some View {
+        Button(action: {
+            audioManager.stop()
+        }) {
+            HStack {
+                Image(systemName: "stop.fill")
+                Text("Stop")
+            }
+            .font(.subheadline)
+            .foregroundColor(.red)
+            .padding(.horizontal, 20)
+            .padding(.vertical, 10)
+            .background(Color(.systemGray6))
+            .cornerRadius(8)
+        }
+        .padding(.top, 20)
+    }
+    
+    // MARK: - Helper Methods
+    private func formatTime(_ time: TimeInterval) -> String {
+        let hours = Int(time) / 3600
+        let minutes = Int(time) / 60 % 60
+        let seconds = Int(time) % 60
+        
+        if hours > 0 {
+            return String(format: "%d:%02d:%02d", hours, minutes, seconds)
+        } else {
+            return String(format: "%d:%02d", minutes, seconds)
+        }
+    }
+}
+
+// MARK: - Array Safe Subscript Extension
+extension Array {
+    subscript(safe index: Int) -> Element? {
+        return indices.contains(index) ? self[index] : nil
+    }
+}
+
