@@ -91,13 +91,12 @@ The app follows a **Model-View-ViewModel (MVVM)** pattern with manager classes h
 - **Location**: `AudioBookPlayer/Models/Models.swift`
 - **Purpose**: User playback preferences
 - **Properties**:
-  - `playbackSpeed: Double`
+  - `playbackSpeed: Double` - Playback speed (0.5x - 2.0x), persisted and restored
   - `skipForwardInterval: TimeInterval`
   - `skipBackwardInterval: TimeInterval`
-  - `sleepTimerEnabled: Bool`
-  - `sleepTimerDuration: TimeInterval`
   - `simulateChapters: Bool` - Whether to generate simulated chapters for books without CUE files
   - `simulatedChapterLength: TimeInterval` - Length of simulated chapters in seconds (default: 900 = 15 minutes)
+- **Note**: Sleep timer is no longer stored in settings - it's a runtime feature controlled directly from the player
 - **Custom Codable**: Implements backward compatibility for new fields using `decodeIfPresent` with defaults
 
 #### `AppState`
@@ -123,6 +122,10 @@ The app follows a **Model-View-ViewModel (MVVM)** pattern with manager classes h
   - `@Published var duration: TimeInterval`
   - `@Published var chapters: [Chapter]`
   - `@Published var playbackError: String?`
+  - `@Published var playbackSpeed: Double` - Current playback speed (0.5x - 2.0x)
+  - `@Published var sleepTimerRemaining: TimeInterval` - Remaining time on sleep timer
+  - `@Published var isSleepTimerActive: Bool` - Whether sleep timer is running
+  - `@Published var sleepTimerInitialDuration: TimeInterval` - Total timer duration for tick calculation
 
 **Key Methods**:
 - `loadBook(_ book: Book)`: Loads a book for playback
@@ -131,19 +134,24 @@ The app follows a **Model-View-ViewModel (MVVM)** pattern with manager classes h
   - Sets up time observers
   - Handles security-scoped resource access
   - Generates simulated chapters if no CUE file exists and simulation is enabled
+  - Loads playback speed from settings
 - `play()`: Starts playback
 - `pause()`: Pauses playback
 - `seek(to time: TimeInterval)`: Seeks to specific time
-- `setPlaybackSpeed(_ speed: Double)`: Adjusts playback speed
+- `setPlaybackSpeed(_ speed: Double)`: Adjusts playback speed and saves to settings
 - `skipForward()` / `skipBackward()`: Skips by configured intervals
 - `nextChapter()` / `previousChapter()`: Navigate between chapters
 - `generateSimulatedChapters(duration:chapterLength:)`: Creates evenly-spaced chapters based on duration
+- `startSleepTimer(duration:)`: Starts sleep timer countdown, pauses playback when expired
+- `cancelSleepTimer()`: Cancels active sleep timer
+- `extendSleepTimer(additionalMinutes:)`: Adds time to active timer (default: 10 minutes)
 
 **Internal State**:
 - `player: AVPlayer?` - AVFoundation player instance
 - `playerItem: AVPlayerItem?` - Current player item
 - `timeObserver: Any?` - Time update observer
 - `isPlayerReady: Bool` - Whether player is ready to play
+- `sleepTimerTask: Task<Void, Never>?` - Async task for timer countdown
 
 #### `GoogleDriveManager`
 - **Location**: `AudioBookPlayer/Managers/GoogleDriveManager.swift`
@@ -266,25 +274,43 @@ The app follows a **Model-View-ViewModel (MVVM)** pattern with manager classes h
   - Playback controls (play, pause, skip)
   - Progress slider
   - Time display
-  - Speed control
+  - Playback speed button with quick selection (0.5x - 2.0x)
+  - Sleep timer button with duration selection (15, 30, 45, 60 minutes)
   - Chapter navigation (next/previous)
   - Chapter list with current chapter indicator
   - Cover art display with "Searching for cover..." indicator
   - Error display
 - **Observations**:
-  - Observes `AudioManager` for playback state and chapters
+  - Observes `AudioManager` for playback state, chapters, speed, and sleep timer
   - Observes `AppState` for current book
   - Observes `CoverImageManager` for cover search progress
+
+#### `SleepTimerFullScreenView`
+- **Location**: `AudioBookPlayer/Views/SleepTimerFullScreenView.swift`
+- **Purpose**: Full-screen sleep timer interface
+- **Features**:
+  - Black background covering entire screen (including tab bar)
+  - Three-section layout (left: stop, center: timer, right: extend)
+  - Large red countdown clock (monospaced, bold, rounded design)
+  - Circular tick indicator with 60 ticks showing progress
+  - Ticks turn from red to gray clockwise from top as time elapses
+  - Stop button (left) - cancels timer and returns to player
+  - Extend button (right) - adds 10 minutes to timer
+  - Works in both portrait and landscape orientations
+- **Components**:
+  - `CircularTickIndicator`: Renders 60 ticks in a circle around the clock
+  - `TickView`: Individual tick with radial orientation
+- **Observations**:
+  - Observes `AudioManager` for timer state and remaining time
 
 #### `SettingsView`
 - **Location**: `AudioBookPlayer/Views/SettingsView.swift`
 - **Purpose**: App settings interface
 - **Features**:
-  - Playback speed adjustment
   - Skip interval configuration
   - Chapter simulation toggle and chapter length picker
-  - Sleep timer settings (UI ready, functionality pending)
   - Storage information (total books, downloaded books)
+- **Note**: Playback speed and sleep timer controls have been moved to the player view for quick access
 
 #### `GoogleDrivePickerView`
 - **Location**: `AudioBookPlayer/Views/GoogleDrivePickerView.swift`
@@ -462,8 +488,9 @@ AppState
 AudioManager
   │
   ├─→ Uses AVFoundation (AVPlayer, AVPlayerItem)
-  ├─→ Uses PersistenceManager (loads settings for chapter simulation)
-  └─→ Observed by PlayerView
+  ├─→ Uses PersistenceManager (loads/saves settings for speed and chapter simulation)
+  ├─→ Manages sleep timer countdown with async Task
+  └─→ Observed by PlayerView, SleepTimerFullScreenView, ContentView
 
 GoogleDriveManager
   │
@@ -501,6 +528,14 @@ AudioBookPlayerApp
        │         └─→ GoogleDrivePickerView
        ├─→ PlayerView
        └─→ SettingsView
+       
+       // Full-screen overlays (when active)
+       └─→ SleepTimerFullScreenView (overlays entire screen when timer active)
+            ├─→ CircularTickIndicator
+            │    └─→ TickView (60 instances)
+            ├─→ Stop Button (left section)
+            ├─→ Timer Display (center section)
+            └─→ Extend Button (right section)
 ```
 
 ## Key Design Patterns

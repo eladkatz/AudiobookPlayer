@@ -11,12 +11,16 @@ class AudioManager: NSObject, ObservableObject {
     @Published var chapters: [Chapter] = []
     @Published var currentChapterIndex: Int = 0
     @Published var playbackError: String?
+    @Published var playbackSpeed: Double = 1.0
+    @Published var sleepTimerRemaining: TimeInterval = 0
+    @Published var isSleepTimerActive: Bool = false
+    @Published var sleepTimerInitialDuration: TimeInterval = 0 // Total duration for tick calculation
     
     private var player: AVPlayer?
     private var playerItem: AVPlayerItem?
     private var timeObserver: Any?
     private var playerWithObserver: AVPlayer? // Track which player has the observer
-    private var playbackSpeed: Double = 1.0
+    private var sleepTimerTask: Task<Void, Never>?
     private var statusObserver: NSKeyValueObservation?
     private var rateObserver: NSKeyValueObservation?
     private var currentBookURL: URL? // Track current book URL for security-scoped access
@@ -174,8 +178,9 @@ class AudioManager: NSObject, ObservableObject {
         // Observe time updates
         setupTimeObserver()
         
-        // Set playback speed
-        setPlaybackSpeed(playbackSpeed)
+        // Load playback speed from settings
+        let settings = PersistenceManager.shared.loadSettings()
+        setPlaybackSpeed(settings.playbackSpeed)
         
         // Observe playback end
         NotificationCenter.default.addObserver(
@@ -297,6 +302,7 @@ class AudioManager: NSObject, ObservableObject {
         player?.seek(to: .zero)
         isPlaying = false
         currentTime = 0
+        cancelSleepTimer() // Cancel sleep timer when stopping
         // Note: Don't remove time observer here - it will be removed when loading a new book
         // Note: Don't reset isPlayerReady here - it will be reset when loading a new book
     }
@@ -357,10 +363,65 @@ class AudioManager: NSObject, ObservableObject {
     // MARK: - Playback Speed
     func setPlaybackSpeed(_ speed: Double) {
         playbackSpeed = speed
+        // Update settings
+        var settings = PersistenceManager.shared.loadSettings()
+        settings.playbackSpeed = speed
+        PersistenceManager.shared.saveSettings(settings)
         // Only set rate if currently playing
         if isPlaying, let player = player {
             player.rate = Float(speed)
         }
+    }
+    
+    // MARK: - Sleep Timer
+    func startSleepTimer(duration: TimeInterval) {
+        // Cancel existing timer if any
+        cancelSleepTimer()
+        
+        sleepTimerRemaining = duration
+        sleepTimerInitialDuration = duration
+        isSleepTimerActive = true
+        
+        // Start countdown task
+        sleepTimerTask = Task { @MainActor in
+            while sleepTimerRemaining > 0 {
+                try? await Task.sleep(nanoseconds: 1_000_000_000) // 1 second
+                
+                // Check if task was cancelled
+                if Task.isCancelled {
+                    break
+                }
+                
+                // Check if timer is still active (might have been cancelled)
+                guard isSleepTimerActive else {
+                    break
+                }
+                
+                sleepTimerRemaining -= 1
+                
+                // Stop playback when timer reaches 0
+                if sleepTimerRemaining <= 0 {
+                    pause()
+                    isSleepTimerActive = false
+                    sleepTimerTask = nil
+                    break
+                }
+            }
+        }
+    }
+    
+    func cancelSleepTimer() {
+        sleepTimerTask?.cancel()
+        sleepTimerTask = nil
+        isSleepTimerActive = false
+        sleepTimerRemaining = 0
+        sleepTimerInitialDuration = 0
+    }
+    
+    func extendSleepTimer(additionalMinutes: TimeInterval = 600) {
+        guard isSleepTimerActive else { return }
+        sleepTimerRemaining += additionalMinutes
+        sleepTimerInitialDuration += additionalMinutes // Update total duration for tick recalculation
     }
     
     // MARK: - Rate Observer
@@ -432,6 +493,7 @@ class AudioManager: NSObject, ObservableObject {
     }
     
     deinit {
+        cancelSleepTimer()
         removeTimeObserver()
         statusObserver?.invalidate()
         rateObserver?.invalidate()

@@ -4,6 +4,8 @@ struct PlayerView: View {
     @ObservedObject var audioManager = AudioManager.shared
     @ObservedObject var appState: AppState
     @ObservedObject private var coverManager = CoverImageManager.shared
+    @State private var showSpeedPicker = false
+    @State private var showSleepTimerPicker = false
     
     var body: some View {
         Group {
@@ -207,7 +209,32 @@ struct PlayerView: View {
     
     // MARK: - Control Buttons Section
     private var controlButtonsSection: some View {
-        HStack(spacing: 30) {
+        HStack(spacing: 20) {
+            // Playback Speed Button (Leftmost)
+            Button(action: {
+                showSpeedPicker = true
+            }) {
+                Text(String(format: "%.2fx", audioManager.playbackSpeed))
+                    .font(.system(size: 16, weight: .medium))
+                    .foregroundColor(.primary)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(Color(.systemGray6))
+                    .cornerRadius(8)
+            }
+            .confirmationDialog("Playback Speed", isPresented: $showSpeedPicker, titleVisibility: .visible) {
+                Button("0.5x") { audioManager.setPlaybackSpeed(0.5) }
+                Button("0.75x") { audioManager.setPlaybackSpeed(0.75) }
+                Button("1x") { audioManager.setPlaybackSpeed(1.0) }
+                Button("1.25x") { audioManager.setPlaybackSpeed(1.25) }
+                Button("1.5x") { audioManager.setPlaybackSpeed(1.5) }
+                Button("1.75x") { audioManager.setPlaybackSpeed(1.75) }
+                Button("2x") { audioManager.setPlaybackSpeed(2.0) }
+                Button("Cancel", role: .cancel) { }
+            }
+            
+            Spacer()
+            
             // Previous Chapter
             Button(action: {
                 audioManager.previousChapter()
@@ -258,6 +285,32 @@ struct PlayerView: View {
                     .foregroundColor(audioManager.chapters.isEmpty ? .gray : .primary)
             }
             .disabled(audioManager.chapters.isEmpty)
+            
+            Spacer()
+            
+            // Sleep Timer Button (Rightmost)
+            Button(action: {
+                if audioManager.isSleepTimerActive {
+                    audioManager.cancelSleepTimer()
+                } else {
+                    showSleepTimerPicker = true
+                }
+            }) {
+                Image(systemName: audioManager.isSleepTimerActive ? "moon.zzz.fill" : "moon.zzz")
+                    .font(.system(size: 18, weight: .medium))
+                    .foregroundColor(audioManager.isSleepTimerActive ? .blue : .primary)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(audioManager.isSleepTimerActive ? Color.blue.opacity(0.1) : Color(.systemGray6))
+                    .cornerRadius(8)
+            }
+            .confirmationDialog("Sleep Timer", isPresented: $showSleepTimerPicker, titleVisibility: .visible) {
+                Button("15 minutes") { audioManager.startSleepTimer(duration: 15 * 60) }
+                Button("30 minutes") { audioManager.startSleepTimer(duration: 30 * 60) }
+                Button("45 minutes") { audioManager.startSleepTimer(duration: 45 * 60) }
+                Button("60 minutes") { audioManager.startSleepTimer(duration: 60 * 60) }
+                Button("Cancel", role: .cancel) { }
+            }
         }
         .padding(.horizontal)
         .padding(.bottom, 30)
@@ -344,6 +397,18 @@ struct PlayerView: View {
             return String(format: "%d:%02d:%02d", hours, minutes, seconds)
         } else {
             return String(format: "%d:%02d", minutes, seconds)
+        }
+    }
+    
+    private func formatTimerTime(_ time: TimeInterval) -> String {
+        let hours = Int(time) / 3600
+        let minutes = Int(time) / 60 % 60
+        let seconds = Int(time) % 60
+        
+        if hours > 0 {
+            return String(format: "%02d:%02d:%02d", hours, minutes, seconds)
+        } else {
+            return String(format: "%02d:%02d", minutes, seconds)
         }
     }
 }

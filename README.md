@@ -10,10 +10,12 @@ A modern iOS audiobook player app built with SwiftUI, featuring local file impor
 - 📍 **Position Tracking**: Automatically saves and restores playback position
 - 📖 **Chapter Navigation**: Navigate by chapters with next/previous controls
 - 🔄 **Simulated Chapters**: Automatically generate chapters for books without CUE files (configurable length)
+- ⏱️ **Sleep Timer**: Full-screen sleep timer with visual countdown and progress indicator
+- ⚡ **Playback Speed Control**: Quick access speed selector (0.5x - 2.0x) directly from player
 - ☁️ **Google Drive Integration**: Import audiobooks directly from Google Drive
 - 📁 **Local File Import**: Import M4B files from your device
 - 🖼️ **Automatic Cover Art**: Automatically searches and downloads book covers from Google Books API
-- ⚙️ **Customizable Settings**: Adjust playback speed, skip intervals, chapter simulation, and more
+- ⚙️ **Customizable Settings**: Adjust skip intervals, chapter simulation, and more
 - 💾 **Persistent Storage**: All data is saved locally and persists between app launches
 
 ## Requirements
@@ -73,7 +75,8 @@ AudioBookPlayer/
 │   │   ├── PlayerView.swift        # Audio player interface
 │   │   ├── SettingsView.swift      # App settings
 │   │   ├── DocumentPicker.swift    # Local file picker
-│   │   └── GoogleDrivePickerView.swift # Google Drive file browser
+│   │   ├── GoogleDrivePickerView.swift # Google Drive file browser
+│   │   └── SleepTimerFullScreenView.swift # Full-screen sleep timer
 │   └── Assets.xcassets/            # App icons and images
 └── Documentation/
     ├── README.md                   # This file
@@ -101,9 +104,10 @@ Manages audio playback using AVFoundation. Handles:
 - Loading and playing M4B files
 - Playback controls (play, pause, seek)
 - Time tracking and position updates
-- Playback speed adjustment
+- Playback speed adjustment (0.5x - 2.0x, persisted to settings)
 - Chapter navigation (next/previous)
 - Simulated chapter generation for books without CUE files
+- Sleep timer with countdown and automatic playback pause
 - Error handling
 
 ### GoogleDriveManager
@@ -175,13 +179,20 @@ The app supports importing audiobooks directly from Google Drive. To set this up
 2. Use the player controls:
    - Play/Pause
    - Skip forward/backward (configurable intervals)
-   - Adjust playback speed
+   - Adjust playback speed (tap speed button for quick selection: 0.5x - 2.0x)
    - Seek using the progress slider
    - Navigate chapters using next/previous buttons
+   - Sleep timer (tap moon icon to set timer: 15, 30, 45, or 60 minutes)
 3. **Chapter Navigation**:
    - Books without CUE files automatically get simulated chapters (default: 15 minutes each)
    - Configure chapter length in Settings → Chapters
    - Toggle chapter simulation on/off in Settings
+4. **Sleep Timer**:
+   - Tap the moon icon in the player controls to activate
+   - Full-screen dark mode with large countdown display
+   - Visual progress indicator with 60 ticks showing elapsed/remaining time
+   - Cancel or extend timer (+10 minutes) directly from full-screen view
+   - Automatically pauses playback when timer expires
 
 ### Managing Books
 
@@ -232,7 +243,6 @@ This project is open source. See LICENSE file for details.
 ## Future Enhancements
 
 - [ ] CUE file parsing for chapter navigation (currently uses simulated chapters)
-- [ ] Sleep timer functionality (UI ready, implementation pending)
 - [ ] Playlist support
 - [ ] Cloud sync across devices
 - [ ] Widget support

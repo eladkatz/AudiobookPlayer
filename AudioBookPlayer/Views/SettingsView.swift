@@ -2,21 +2,15 @@ import SwiftUI
 
 struct SettingsView: View {
     @ObservedObject var appState: AppState
-    @State private var playbackSpeed: Double
     @State private var skipForwardInterval: TimeInterval
     @State private var skipBackwardInterval: TimeInterval
-    @State private var sleepTimerEnabled: Bool
-    @State private var sleepTimerDuration: TimeInterval
     @State private var simulateChapters: Bool
     @State private var simulatedChapterLength: TimeInterval
     
     init(appState: AppState) {
         self.appState = appState
-        _playbackSpeed = State(initialValue: appState.playbackSettings.playbackSpeed)
         _skipForwardInterval = State(initialValue: appState.playbackSettings.skipForwardInterval)
         _skipBackwardInterval = State(initialValue: appState.playbackSettings.skipBackwardInterval)
-        _sleepTimerEnabled = State(initialValue: appState.playbackSettings.sleepTimerEnabled)
-        _sleepTimerDuration = State(initialValue: appState.playbackSettings.sleepTimerDuration)
         _simulateChapters = State(initialValue: appState.playbackSettings.simulateChapters)
         _simulatedChapterLength = State(initialValue: appState.playbackSettings.simulatedChapterLength)
     }
@@ -24,36 +18,6 @@ struct SettingsView: View {
     var body: some View {
         NavigationView {
             Form {
-                Section(header: Text("Playback")) {
-                    // Playback Speed
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack {
-                            Text("Playback Speed")
-                            Spacer()
-                            Text(String(format: "%.2fx", playbackSpeed))
-                                .foregroundColor(.secondary)
-                        }
-                        
-                        Slider(
-                            value: $playbackSpeed,
-                            in: 0.5...2.0,
-                            step: 0.1
-                        ) {
-                            Text("Speed")
-                        } minimumValueLabel: {
-                            Text("0.5x")
-                                .font(.caption)
-                        } maximumValueLabel: {
-                            Text("2.0x")
-                                .font(.caption)
-                        }
-                        .onChange(of: playbackSpeed) { oldValue, newValue in
-                            updatePlaybackSpeed(newValue)
-                        }
-                    }
-                    .padding(.vertical, 4)
-                }
-                
                 Section(header: Text("Skip Intervals")) {
                     // Skip Forward
                     VStack(alignment: .leading, spacing: 8) {
@@ -132,29 +96,6 @@ struct SettingsView: View {
                     }
                 }
                 
-                Section(header: Text("Sleep Timer")) {
-                    Toggle("Enable Sleep Timer", isOn: $sleepTimerEnabled)
-                        .onChange(of: sleepTimerEnabled) { oldValue, newValue in
-                            updateSleepTimerEnabled(newValue)
-                        }
-                    
-                    if sleepTimerEnabled {
-                        Picker("Duration", selection: $sleepTimerDuration) {
-                            Text("5 minutes").tag(5.0 * 60.0)
-                            Text("10 minutes").tag(10.0 * 60.0)
-                            Text("15 minutes").tag(15.0 * 60.0)
-                            Text("30 minutes").tag(30.0 * 60.0)
-                            Text("45 minutes").tag(45.0 * 60.0)
-                            Text("60 minutes").tag(60.0 * 60.0)
-                            Text("90 minutes").tag(90.0 * 60.0)
-                            Text("2 hours").tag(2.0 * 60.0 * 60.0)
-                        }
-                        .onChange(of: sleepTimerDuration) { oldValue, newValue in
-                            updateSleepTimerDuration(newValue)
-                        }
-                    }
-                }
-                
                 Section(header: Text("Storage")) {
                     HStack {
                         Text("Total Books")
@@ -177,12 +118,6 @@ struct SettingsView: View {
     }
     
     // MARK: - Update Methods
-    private func updatePlaybackSpeed(_ speed: Double) {
-        appState.playbackSettings.playbackSpeed = speed
-        AudioManager.shared.setPlaybackSpeed(speed)
-        PersistenceManager.shared.saveSettings(appState.playbackSettings)
-    }
-    
     private func updateSkipForwardInterval(_ interval: TimeInterval) {
         appState.playbackSettings.skipForwardInterval = interval
         PersistenceManager.shared.saveSettings(appState.playbackSettings)
@@ -190,16 +125,6 @@ struct SettingsView: View {
     
     private func updateSkipBackwardInterval(_ interval: TimeInterval) {
         appState.playbackSettings.skipBackwardInterval = interval
-        PersistenceManager.shared.saveSettings(appState.playbackSettings)
-    }
-    
-    private func updateSleepTimerEnabled(_ enabled: Bool) {
-        appState.playbackSettings.sleepTimerEnabled = enabled
-        PersistenceManager.shared.saveSettings(appState.playbackSettings)
-    }
-    
-    private func updateSleepTimerDuration(_ duration: TimeInterval) {
-        appState.playbackSettings.sleepTimerDuration = duration
         PersistenceManager.shared.saveSettings(appState.playbackSettings)
     }
     

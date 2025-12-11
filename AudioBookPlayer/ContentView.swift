@@ -2,6 +2,7 @@ import SwiftUI
 
 struct ContentView: View {
     @EnvironmentObject var appState: AppState
+    @ObservedObject private var audioManager = AudioManager.shared
     @State private var selectedTab = 0
     
     var body: some View {
@@ -29,6 +30,14 @@ struct ContentView: View {
                     .tag(2)
             }
             .ignoresSafeArea(.keyboard)
+            
+            // Full-screen sleep timer overlay at ContentView level
+            if audioManager.isSleepTimerActive {
+                SleepTimerFullScreenView(audioManager: audioManager)
+                    .transition(.opacity)
+                    .zIndex(1000)
+                    .ignoresSafeArea(.all, edges: .all)
+            }
         }
         .onChange(of: appState.currentBook) { oldValue, newBook in
             // Auto-switch to player when a book is selected
