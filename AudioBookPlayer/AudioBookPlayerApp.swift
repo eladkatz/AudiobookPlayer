@@ -32,6 +32,29 @@ struct AudioBookPlayerApp: App {
             updatedBook.currentPosition = PersistenceManager.shared.loadPosition(for: book.id)
             appState.currentBook = updatedBook
         }
+        
+        // Retry failed cover downloads in background
+        Task {
+            let downloadedCovers = await CoverImageManager.shared.retryFailedDownloads(for: appState.books)
+            
+            // Update books with newly downloaded covers
+            await MainActor.run {
+                var updatedBooks = appState.books
+                var hasChanges = false
+                
+                for (index, book) in updatedBooks.enumerated() {
+                    if let coverURL = downloadedCovers[book.id] {
+                        updatedBooks[index].coverImageURL = coverURL
+                        hasChanges = true
+                    }
+                }
+                
+                if hasChanges {
+                    appState.books = updatedBooks
+                    PersistenceManager.shared.saveBooks(updatedBooks)
+                }
+            }
+        }
     }
 }
 

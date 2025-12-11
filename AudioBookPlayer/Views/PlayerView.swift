@@ -3,6 +3,7 @@ import SwiftUI
 struct PlayerView: View {
     @ObservedObject var audioManager = AudioManager.shared
     @ObservedObject var appState: AppState
+    @ObservedObject private var coverManager = CoverImageManager.shared
     
     var body: some View {
         Group {
@@ -115,16 +116,28 @@ struct PlayerView: View {
                     .cornerRadius(12)
                     .shadow(radius: 10)
             } else {
-                // Placeholder
-                RoundedRectangle(cornerRadius: 12)
-                    .fill(Color(.systemGray5))
-                    .frame(width: 280, height: 280)
-                    .overlay(
+                // Placeholder with searching indicator
+                ZStack {
+                    RoundedRectangle(cornerRadius: 12)
+                        .fill(Color(.systemGray5))
+                        .frame(width: 280, height: 280)
+                        .shadow(radius: 10)
+                    
+                    if coverManager.isSearching && coverManager.searchingBookID == appState.currentBook?.id {
+                        // Searching indicator
+                        VStack(spacing: 12) {
+                            ProgressView()
+                                .scaleEffect(1.5)
+                            Text("Searching for cover...")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    } else {
                         Image(systemName: "book.closed.fill")
                             .font(.system(size: 60))
                             .foregroundColor(.gray)
-                    )
-                    .shadow(radius: 10)
+                    }
+                }
             }
         }
         .padding(.top, 20)

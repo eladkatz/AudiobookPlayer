@@ -394,12 +394,20 @@ struct ImportView: View {
         isImporting = true
         
         Task {
-            if let book = await BookFileManager.shared.importBook(from: url) {
+            if var book = await BookFileManager.shared.importBook(from: url) {
                 await MainActor.run {
                     appState.books.append(book)
                     PersistenceManager.shared.saveBooks(appState.books)
                     isImporting = false
                     dismiss()
+                    
+                    // If cover was found after import, update the book
+                    if let coverURL = book.coverImageURL {
+                        if let index = appState.books.firstIndex(where: { $0.id == book.id }) {
+                            appState.books[index].coverImageURL = coverURL
+                            PersistenceManager.shared.saveBooks(appState.books)
+                        }
+                    }
                 }
             } else {
                 await MainActor.run {
@@ -414,12 +422,20 @@ struct ImportView: View {
         isImporting = true
         
         Task {
-            if let book = await BookFileManager.shared.importBookFromGoogleDriveM4B(m4bFileID: m4bFileID, folderID: folderID) {
+            if var book = await BookFileManager.shared.importBookFromGoogleDriveM4B(m4bFileID: m4bFileID, folderID: folderID) {
                 await MainActor.run {
                     appState.books.append(book)
                     PersistenceManager.shared.saveBooks(appState.books)
                     isImporting = false
                     dismiss()
+                    
+                    // If cover was found after import, update the book
+                    if let coverURL = book.coverImageURL {
+                        if let index = appState.books.firstIndex(where: { $0.id == book.id }) {
+                            appState.books[index].coverImageURL = coverURL
+                            PersistenceManager.shared.saveBooks(appState.books)
+                        }
+                    }
                 }
             } else {
                 await MainActor.run {

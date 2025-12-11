@@ -68,12 +68,19 @@ class BookFileManager {
             let duration = await loadDuration(from: asset)
             
             // Create Book object
-            let book = Book(
+            var book = Book(
                 title: title,
                 fileURL: destinationURL,
                 duration: duration,
                 isDownloaded: true
             )
+            
+            // Search and download cover image if not present
+            if book.coverImageURL == nil {
+                if let coverURL = await CoverImageManager.shared.searchAndDownloadCover(for: book) {
+                    book.coverImageURL = coverURL
+                }
+            }
             
             return book
             
@@ -141,6 +148,13 @@ class BookFileManager {
             }
             book.associatedFiles = associatedFiles
             
+            // Search and download cover image if not present
+            if book.coverImageURL == nil {
+                if let coverURL = await CoverImageManager.shared.searchAndDownloadCover(for: book) {
+                    book.coverImageURL = coverURL
+                }
+            }
+            
             return book
             
         } catch {
@@ -205,6 +219,13 @@ class BookFileManager {
                 associatedFiles.append(nfoFile)
             }
             book.associatedFiles = associatedFiles
+            
+            // Search and download cover image if not present
+            if book.coverImageURL == nil {
+                if let coverURL = await CoverImageManager.shared.searchAndDownloadCover(for: book) {
+                    book.coverImageURL = coverURL
+                }
+            }
             
             return book
             
