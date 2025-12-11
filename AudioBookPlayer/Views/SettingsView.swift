@@ -7,6 +7,8 @@ struct SettingsView: View {
     @State private var skipBackwardInterval: TimeInterval
     @State private var sleepTimerEnabled: Bool
     @State private var sleepTimerDuration: TimeInterval
+    @State private var simulateChapters: Bool
+    @State private var simulatedChapterLength: TimeInterval
     
     init(appState: AppState) {
         self.appState = appState
@@ -15,6 +17,8 @@ struct SettingsView: View {
         _skipBackwardInterval = State(initialValue: appState.playbackSettings.skipBackwardInterval)
         _sleepTimerEnabled = State(initialValue: appState.playbackSettings.sleepTimerEnabled)
         _sleepTimerDuration = State(initialValue: appState.playbackSettings.sleepTimerDuration)
+        _simulateChapters = State(initialValue: appState.playbackSettings.simulateChapters)
+        _simulatedChapterLength = State(initialValue: appState.playbackSettings.simulatedChapterLength)
     }
     
     var body: some View {
@@ -96,6 +100,38 @@ struct SettingsView: View {
                     .padding(.vertical, 4)
                 }
                 
+                Section(header: Text("Chapters")) {
+                    Toggle("Simulate Chapters", isOn: $simulateChapters)
+                        .onChange(of: simulateChapters) { oldValue, newValue in
+                            updateSimulateChapters(newValue)
+                        }
+                    
+                    if simulateChapters {
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack {
+                                Text("Chapter Length")
+                                Spacer()
+                                Text(formatChapterLength(simulatedChapterLength))
+                                    .foregroundColor(.secondary)
+                            }
+                            
+                            Picker("Chapter Length", selection: $simulatedChapterLength) {
+                                Text("5 minutes").tag(5.0 * 60.0)
+                                Text("10 minutes").tag(10.0 * 60.0)
+                                Text("15 minutes").tag(15.0 * 60.0)
+                                Text("20 minutes").tag(20.0 * 60.0)
+                                Text("30 minutes").tag(30.0 * 60.0)
+                                Text("60 minutes").tag(60.0 * 60.0)
+                            }
+                            .pickerStyle(.menu)
+                            .onChange(of: simulatedChapterLength) { oldValue, newValue in
+                                updateSimulatedChapterLength(newValue)
+                            }
+                        }
+                        .padding(.vertical, 4)
+                    }
+                }
+                
                 Section(header: Text("Sleep Timer")) {
                     Toggle("Enable Sleep Timer", isOn: $sleepTimerEnabled)
                         .onChange(of: sleepTimerEnabled) { oldValue, newValue in
@@ -165,6 +201,41 @@ struct SettingsView: View {
     private func updateSleepTimerDuration(_ duration: TimeInterval) {
         appState.playbackSettings.sleepTimerDuration = duration
         PersistenceManager.shared.saveSettings(appState.playbackSettings)
+    }
+    
+    private func updateSimulateChapters(_ enabled: Bool) {
+        appState.playbackSettings.simulateChapters = enabled
+        PersistenceManager.shared.saveSettings(appState.playbackSettings)
+        
+        // If enabled and a book is currently loaded, regenerate chapters
+        if enabled, let currentBook = appState.currentBook {
+            AudioManager.shared.loadBook(currentBook)
+        }
+    }
+    
+    private func updateSimulatedChapterLength(_ length: TimeInterval) {
+        appState.playbackSettings.simulatedChapterLength = length
+        PersistenceManager.shared.saveSettings(appState.playbackSettings)
+        
+        // If a book is currently loaded, regenerate chapters with new length
+        if let currentBook = appState.currentBook {
+            AudioManager.shared.loadBook(currentBook)
+        }
+    }
+    
+    private func formatChapterLength(_ seconds: TimeInterval) -> String {
+        let minutes = Int(seconds / 60)
+        if minutes < 60 {
+            return "\(minutes) min"
+        } else {
+            let hours = minutes / 60
+            let remainingMinutes = minutes % 60
+            if remainingMinutes == 0 {
+                return "\(hours) hr"
+            } else {
+                return "\(hours) hr \(remainingMinutes) min"
+            }
+        }
     }
 }
 

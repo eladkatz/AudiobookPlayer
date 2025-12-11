@@ -113,13 +113,17 @@ struct PlaybackSettings: Codable {
     var skipBackwardInterval: TimeInterval
     var sleepTimerEnabled: Bool
     var sleepTimerDuration: TimeInterval
+    var simulateChapters: Bool
+    var simulatedChapterLength: TimeInterval // In seconds
     
     static let `default` = PlaybackSettings(
         playbackSpeed: 1.0,
         skipForwardInterval: 30.0,
         skipBackwardInterval: 30.0,
         sleepTimerEnabled: false,
-        sleepTimerDuration: 0
+        sleepTimerDuration: 0,
+        simulateChapters: true,
+        simulatedChapterLength: 900.0 // 15 minutes default
     )
 }
 

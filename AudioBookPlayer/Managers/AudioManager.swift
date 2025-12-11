@@ -229,8 +229,50 @@ class AudioManager: NSObject, ObservableObject {
             duration: duration
         ))
         
+        // If no chapters were parsed (or only a single placeholder chapter),
+        // check if we should simulate chapters
+        if parsedChapters.count <= 1 {
+            let settings = PersistenceManager.shared.loadSettings()
+            if settings.simulateChapters {
+                parsedChapters = generateSimulatedChapters(duration: duration, chapterLength: settings.simulatedChapterLength)
+            }
+        }
+        
         self.chapters = parsedChapters
         self.updateCurrentChapterIndex()
+    }
+    
+    // MARK: - Simulated Chapters
+    private func generateSimulatedChapters(duration: TimeInterval, chapterLength: TimeInterval) -> [Chapter] {
+        guard duration > 0 && chapterLength > 0 else {
+            // Fallback to single chapter if invalid duration or chapter length
+            return [Chapter(title: "Chapter 1", startTime: 0, duration: duration)]
+        }
+        
+        var chapters: [Chapter] = []
+        let numberOfChapters = Int(ceil(duration / chapterLength))
+        
+        for i in 0..<numberOfChapters {
+            let startTime = TimeInterval(i) * chapterLength
+            let remainingDuration = duration - startTime
+            let chapterDuration = min(chapterLength, remainingDuration)
+            
+            // Only add chapter if it has positive duration
+            if chapterDuration > 0 {
+                chapters.append(Chapter(
+                    title: "Chapter \(i + 1)",
+                    startTime: startTime,
+                    duration: chapterDuration
+                ))
+            }
+        }
+        
+        // Ensure at least one chapter exists
+        if chapters.isEmpty {
+            chapters.append(Chapter(title: "Chapter 1", startTime: 0, duration: duration))
+        }
+        
+        return chapters
     }
     
     // MARK: - Playback Controls
