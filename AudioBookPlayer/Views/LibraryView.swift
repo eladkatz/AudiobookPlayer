@@ -397,17 +397,17 @@ struct ImportView: View {
             if var book = await BookFileManager.shared.importBook(from: url) {
                 await MainActor.run {
                     appState.books.append(book)
-                    PersistenceManager.shared.saveBooks(appState.books)
-                    isImporting = false
-                    dismiss()
                     
-                    // If cover was found after import, update the book
+                    // If cover was found during import, update the book before saving
                     if let coverURL = book.coverImageURL {
                         if let index = appState.books.firstIndex(where: { $0.id == book.id }) {
                             appState.books[index].coverImageURL = coverURL
-                            PersistenceManager.shared.saveBooks(appState.books)
                         }
                     }
+                    
+                    PersistenceManager.shared.saveBooks(appState.books)
+                    isImporting = false
+                    dismiss()
                 }
             } else {
                 await MainActor.run {
@@ -425,17 +425,17 @@ struct ImportView: View {
             if var book = await BookFileManager.shared.importBookFromGoogleDriveM4B(m4bFileID: m4bFileID, folderID: folderID) {
                 await MainActor.run {
                     appState.books.append(book)
-                    PersistenceManager.shared.saveBooks(appState.books)
-                    isImporting = false
-                    dismiss()
                     
-                    // If cover was found after import, update the book
+                    // If cover was found during import, update the book before saving
                     if let coverURL = book.coverImageURL {
                         if let index = appState.books.firstIndex(where: { $0.id == book.id }) {
                             appState.books[index].coverImageURL = coverURL
-                            PersistenceManager.shared.saveBooks(appState.books)
                         }
                     }
+                    
+                    PersistenceManager.shared.saveBooks(appState.books)
+                    isImporting = false
+                    dismiss()
                 }
             } else {
                 await MainActor.run {

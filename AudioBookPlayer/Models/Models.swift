@@ -126,6 +126,25 @@ struct PlaybackSettings: Codable {
         simulatedChapterLength: 900.0 // 15 minutes default
     )
     
+    // Custom initializer to support memberwise initialization
+    init(
+        playbackSpeed: Double,
+        skipForwardInterval: TimeInterval,
+        skipBackwardInterval: TimeInterval,
+        sleepTimerEnabled: Bool,
+        sleepTimerDuration: TimeInterval,
+        simulateChapters: Bool,
+        simulatedChapterLength: TimeInterval
+    ) {
+        self.playbackSpeed = playbackSpeed
+        self.skipForwardInterval = skipForwardInterval
+        self.skipBackwardInterval = skipBackwardInterval
+        self.sleepTimerEnabled = sleepTimerEnabled
+        self.sleepTimerDuration = sleepTimerDuration
+        self.simulateChapters = simulateChapters
+        self.simulatedChapterLength = simulatedChapterLength
+    }
+    
     // Custom Codable implementation for backward compatibility
     enum CodingKeys: String, CodingKey {
         case playbackSpeed
