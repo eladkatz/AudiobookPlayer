@@ -207,8 +207,8 @@ struct SettingsView: View {
         appState.playbackSettings.simulateChapters = enabled
         PersistenceManager.shared.saveSettings(appState.playbackSettings)
         
-        // If enabled and a book is currently loaded, regenerate chapters
-        if enabled, let currentBook = appState.currentBook {
+        // Reload book to regenerate chapters whenever the setting changes
+        if let currentBook = appState.currentBook {
             AudioManager.shared.loadBook(currentBook)
         }
     }
