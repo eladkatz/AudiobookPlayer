@@ -57,8 +57,16 @@ struct PlayerView: View {
                 .padding()
             }
         }
+        .onChange(of: appState.currentBook?.id) { oldID, newID in
+            // Only load book when it actually changes, not on every view appearance
+            if let book = appState.currentBook, newID != oldID {
+                audioManager.loadBook(book)
+            }
+        }
         .onAppear {
-            if let book = appState.currentBook {
+            // Only load if no book is currently loaded (initial load)
+            // Check duration == 0 to determine if no book is loaded
+            if let book = appState.currentBook, audioManager.duration == 0 {
                 audioManager.loadBook(book)
             }
         }

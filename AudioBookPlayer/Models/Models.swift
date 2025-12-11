@@ -115,6 +115,7 @@ struct PlaybackSettings: Codable {
     var sleepTimerDuration: TimeInterval
     var simulateChapters: Bool
     var simulatedChapterLength: TimeInterval // In seconds
+    var rewindAfterInterruption: TimeInterval // In seconds, 0-30, default 2
     
     static let `default` = PlaybackSettings(
         playbackSpeed: 1.0,
@@ -123,7 +124,8 @@ struct PlaybackSettings: Codable {
         sleepTimerEnabled: false,
         sleepTimerDuration: 0,
         simulateChapters: true,
-        simulatedChapterLength: 900.0 // 15 minutes default
+        simulatedChapterLength: 900.0, // 15 minutes default
+        rewindAfterInterruption: 2.0 // 2 seconds default
     )
     
     // Custom initializer to support memberwise initialization
@@ -134,7 +136,8 @@ struct PlaybackSettings: Codable {
         sleepTimerEnabled: Bool,
         sleepTimerDuration: TimeInterval,
         simulateChapters: Bool,
-        simulatedChapterLength: TimeInterval
+        simulatedChapterLength: TimeInterval,
+        rewindAfterInterruption: TimeInterval
     ) {
         self.playbackSpeed = playbackSpeed
         self.skipForwardInterval = skipForwardInterval
@@ -143,6 +146,7 @@ struct PlaybackSettings: Codable {
         self.sleepTimerDuration = sleepTimerDuration
         self.simulateChapters = simulateChapters
         self.simulatedChapterLength = simulatedChapterLength
+        self.rewindAfterInterruption = rewindAfterInterruption
     }
     
     // Custom Codable implementation for backward compatibility
@@ -154,6 +158,7 @@ struct PlaybackSettings: Codable {
         case sleepTimerDuration
         case simulateChapters
         case simulatedChapterLength
+        case rewindAfterInterruption
     }
     
     init(from decoder: Decoder) throws {
@@ -169,6 +174,7 @@ struct PlaybackSettings: Codable {
         // Decode new fields with defaults for backward compatibility
         simulateChapters = try container.decodeIfPresent(Bool.self, forKey: .simulateChapters) ?? true
         simulatedChapterLength = try container.decodeIfPresent(TimeInterval.self, forKey: .simulatedChapterLength) ?? 900.0
+        rewindAfterInterruption = try container.decodeIfPresent(TimeInterval.self, forKey: .rewindAfterInterruption) ?? 2.0
     }
     
     func encode(to encoder: Encoder) throws {
@@ -180,6 +186,7 @@ struct PlaybackSettings: Codable {
         try container.encode(sleepTimerDuration, forKey: .sleepTimerDuration)
         try container.encode(simulateChapters, forKey: .simulateChapters)
         try container.encode(simulatedChapterLength, forKey: .simulatedChapterLength)
+        try container.encode(rewindAfterInterruption, forKey: .rewindAfterInterruption)
     }
 }
 

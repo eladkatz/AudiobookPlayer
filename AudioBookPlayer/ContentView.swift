@@ -39,9 +39,9 @@ struct ContentView: View {
                     .ignoresSafeArea(.all, edges: .all)
             }
         }
-        .onChange(of: appState.currentBook) { oldValue, newBook in
-            // Auto-switch to player when a book is selected
-            if newBook != nil && selectedTab != 1 {
+        .onChange(of: appState.currentBook?.id) { oldID, newID in
+            // Auto-switch to player only when a NEW book is selected (not when navigating tabs)
+            if newID != nil && newID != oldID && selectedTab != 1 {
                 selectedTab = 1
             }
         }

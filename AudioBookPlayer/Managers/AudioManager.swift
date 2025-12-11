@@ -24,12 +24,15 @@ class AudioManager: NSObject, ObservableObject {
     private var statusObserver: NSKeyValueObservation?
     private var rateObserver: NSKeyValueObservation?
     private var currentBookURL: URL? // Track current book URL for security-scoped access
+    private var currentBookID: UUID? // Track currently loaded book ID to avoid unnecessary reloads
     private var hasSecurityAccess: Bool = false // Track if we started security-scoped access
     private var isPlayerReady: Bool = false // Track if player is ready to play
+    private var wasPlayingBeforeInterruption: Bool = false // Track playback state before interruption
     
     private override init() {
         super.init()
         setupAudioSession()
+        setupInterruptionNotifications()
     }
     
     // MARK: - Audio Session Setup
@@ -42,14 +45,84 @@ class AudioManager: NSObject, ObservableObject {
         }
     }
     
+    // MARK: - Interruption Handling
+    private func setupInterruptionNotifications() {
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleInterruption(_:)),
+            name: AVAudioSession.interruptionNotification,
+            object: AVAudioSession.sharedInstance()
+        )
+    }
+    
+    @objc private func handleInterruption(_ notification: Notification) {
+        guard let userInfo = notification.userInfo,
+              let typeValue = userInfo[AVAudioSessionInterruptionTypeKey] as? UInt,
+              let type = AVAudioSession.InterruptionType(rawValue: typeValue) else {
+            return
+        }
+        
+        switch type {
+        case .began:
+            // Interruption started - pause playback and remember state
+            wasPlayingBeforeInterruption = isPlaying
+            if isPlaying {
+                pause()
+                print("🔇 AudioManager: Interruption began, paused playback")
+            }
+            
+        case .ended:
+            // Interruption ended - check if we should resume
+            guard let optionsValue = userInfo[AVAudioSessionInterruptionOptionKey] as? UInt else {
+                return
+            }
+            let options = AVAudioSession.InterruptionOptions(rawValue: optionsValue)
+            
+            if options.contains(.shouldResume) && wasPlayingBeforeInterruption && isPlayerReady {
+                // Get rewind amount from settings
+                let settings = PersistenceManager.shared.loadSettings()
+                let rewindAmount = settings.rewindAfterInterruption
+                
+                if rewindAmount > 0 {
+                    // Rewind by configured amount
+                    let newTime = max(0, currentTime - rewindAmount)
+                    seek(to: newTime) { [weak self] in
+                        // Resume after seek completes
+                        guard let self = self, self.isPlayerReady else { return }
+                        self.play()
+                        print("▶️ AudioManager: Interruption ended, rewound \(rewindAmount)s and resumed playback")
+                    }
+                } else {
+                    // No rewind, just resume
+                    play()
+                    print("▶️ AudioManager: Interruption ended, resumed playback (no rewind)")
+                }
+            }
+            
+            wasPlayingBeforeInterruption = false
+            
+        @unknown default:
+            break
+        }
+    }
+    
     // MARK: - Load Book
     func loadBook(_ book: Book) {
+        // If this book is already loaded, don't reload it
+        if currentBookID == book.id && player != nil {
+            return
+        }
+        
         // Clear any previous errors
         playbackError = nil
         
         // Remove time observer before creating new player
         removeTimeObserver()
+        wasPlayingBeforeInterruption = false // Reset interruption state when loading new book
         stop()
+        
+        // Track the current book ID
+        currentBookID = book.id
         
         // Remove previous observers
         statusObserver?.invalidate()
@@ -302,13 +375,18 @@ class AudioManager: NSObject, ObservableObject {
         player?.seek(to: .zero)
         isPlaying = false
         currentTime = 0
+        wasPlayingBeforeInterruption = false // Reset interruption state
         cancelSleepTimer() // Cancel sleep timer when stopping
+        currentBookID = nil // Clear current book ID when stopping
         // Note: Don't remove time observer here - it will be removed when loading a new book
         // Note: Don't reset isPlayerReady here - it will be reset when loading a new book
     }
     
-    func seek(to time: TimeInterval) {
-        guard let player = player else { return }
+    func seek(to time: TimeInterval, completion: (() -> Void)? = nil) {
+        guard let player = player else {
+            completion?()
+            return
+        }
         
         let cmTime = CMTime(seconds: time, preferredTimescale: 600)
         let wasPlaying = isPlaying
@@ -319,7 +397,10 @@ class AudioManager: NSObject, ObservableObject {
         }
         
         player.seek(to: cmTime, completionHandler: { [weak self] completed in
-            guard let self = self, completed else { return }
+            guard let self = self, completed else {
+                completion?()
+                return
+            }
             
             DispatchQueue.main.async {
                 self.currentTime = time
@@ -329,6 +410,8 @@ class AudioManager: NSObject, ObservableObject {
                 if wasPlaying && self.isPlayerReady {
                     self.play()
                 }
+                
+                completion?()
             }
         })
     }

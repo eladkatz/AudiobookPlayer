@@ -6,6 +6,7 @@ struct SettingsView: View {
     @State private var skipBackwardInterval: TimeInterval
     @State private var simulateChapters: Bool
     @State private var simulatedChapterLength: TimeInterval
+    @State private var rewindAfterInterruption: TimeInterval
     
     init(appState: AppState) {
         self.appState = appState
@@ -13,6 +14,7 @@ struct SettingsView: View {
         _skipBackwardInterval = State(initialValue: appState.playbackSettings.skipBackwardInterval)
         _simulateChapters = State(initialValue: appState.playbackSettings.simulateChapters)
         _simulatedChapterLength = State(initialValue: appState.playbackSettings.simulatedChapterLength)
+        _rewindAfterInterruption = State(initialValue: appState.playbackSettings.rewindAfterInterruption)
     }
     
     var body: some View {
@@ -96,6 +98,40 @@ struct SettingsView: View {
                     }
                 }
                 
+                Section(header: Text("Interruptions")) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            Text("Rewind After Interruptions")
+                            Spacer()
+                            if rewindAfterInterruption == 0 {
+                                Text("Off")
+                                    .foregroundColor(.secondary)
+                            } else {
+                                Text("\(Int(rewindAfterInterruption))s")
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                        
+                        Slider(
+                            value: $rewindAfterInterruption,
+                            in: 0...30,
+                            step: 1
+                        ) {
+                            Text("Rewind")
+                        } minimumValueLabel: {
+                            Text("0s")
+                                .font(.caption)
+                        } maximumValueLabel: {
+                            Text("30s")
+                                .font(.caption)
+                        }
+                        .onChange(of: rewindAfterInterruption) { oldValue, newValue in
+                            updateRewindAfterInterruption(newValue)
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
+                
                 Section(header: Text("Storage")) {
                     HStack {
                         Text("Total Books")
@@ -146,6 +182,11 @@ struct SettingsView: View {
         if let currentBook = appState.currentBook {
             AudioManager.shared.loadBook(currentBook)
         }
+    }
+    
+    private func updateRewindAfterInterruption(_ seconds: TimeInterval) {
+        appState.playbackSettings.rewindAfterInterruption = seconds
+        PersistenceManager.shared.saveSettings(appState.playbackSettings)
     }
     
     private func formatChapterLength(_ seconds: TimeInterval) -> String {
