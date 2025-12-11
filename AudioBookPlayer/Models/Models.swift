@@ -125,6 +125,43 @@ struct PlaybackSettings: Codable {
         simulateChapters: true,
         simulatedChapterLength: 900.0 // 15 minutes default
     )
+    
+    // Custom Codable implementation for backward compatibility
+    enum CodingKeys: String, CodingKey {
+        case playbackSpeed
+        case skipForwardInterval
+        case skipBackwardInterval
+        case sleepTimerEnabled
+        case sleepTimerDuration
+        case simulateChapters
+        case simulatedChapterLength
+    }
+    
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        
+        // Decode existing fields
+        playbackSpeed = try container.decode(Double.self, forKey: .playbackSpeed)
+        skipForwardInterval = try container.decode(TimeInterval.self, forKey: .skipForwardInterval)
+        skipBackwardInterval = try container.decode(TimeInterval.self, forKey: .skipBackwardInterval)
+        sleepTimerEnabled = try container.decode(Bool.self, forKey: .sleepTimerEnabled)
+        sleepTimerDuration = try container.decode(TimeInterval.self, forKey: .sleepTimerDuration)
+        
+        // Decode new fields with defaults for backward compatibility
+        simulateChapters = try container.decodeIfPresent(Bool.self, forKey: .simulateChapters) ?? true
+        simulatedChapterLength = try container.decodeIfPresent(TimeInterval.self, forKey: .simulatedChapterLength) ?? 900.0
+    }
+    
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(playbackSpeed, forKey: .playbackSpeed)
+        try container.encode(skipForwardInterval, forKey: .skipForwardInterval)
+        try container.encode(skipBackwardInterval, forKey: .skipBackwardInterval)
+        try container.encode(sleepTimerEnabled, forKey: .sleepTimerEnabled)
+        try container.encode(sleepTimerDuration, forKey: .sleepTimerDuration)
+        try container.encode(simulateChapters, forKey: .simulateChapters)
+        try container.encode(simulatedChapterLength, forKey: .simulatedChapterLength)
+    }
 }
 
 // MARK: - App State

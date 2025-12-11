@@ -40,12 +40,13 @@ class CoverImageManager: ObservableObject {
             return coverURL
         }
         
-        // Update searching state
+        // Update searching state BEFORE any async operations that might fail
         await MainActor.run {
             self.isSearching = true
             self.searchingBookID = book.id
         }
         
+        // Set up defer block to always reset searching state, even on early returns
         defer {
             Task { @MainActor in
                 if self.searchingBookID == book.id {
