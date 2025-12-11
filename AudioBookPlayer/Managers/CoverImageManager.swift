@@ -46,16 +46,6 @@ class CoverImageManager: ObservableObject {
             self.searchingBookID = book.id
         }
         
-        // Set up defer block to always reset searching state, even on early returns
-        defer {
-            Task { @MainActor in
-                if self.searchingBookID == book.id {
-                    self.isSearching = false
-                    self.searchingBookID = nil
-                }
-            }
-        }
-        
         // Build search query - clean up title (remove brackets, etc.)
         var cleanTitle = book.title
         // Remove common patterns like [ASIN] or [ISBN] from title
@@ -71,6 +61,13 @@ class CoverImageManager: ObservableObject {
         guard let encodedQuery = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
               let searchURL = URL(string: "\(baseURL)?q=\(encodedQuery)&maxResults=1") else {
             print("⚠️ CoverImageManager: Failed to encode query or create URL: \(query)")
+            // Reset searching state synchronously before early return
+            await MainActor.run {
+                if self.searchingBookID == book.id {
+                    self.isSearching = false
+                    self.searchingBookID = nil
+                }
+            }
             return nil
         }
         
@@ -81,6 +78,13 @@ class CoverImageManager: ObservableObject {
             guard let httpResponse = response as? HTTPURLResponse,
                   httpResponse.statusCode == 200 else {
                 print("⚠️ CoverImageManager: HTTP error: \((response as? HTTPURLResponse)?.statusCode ?? -1)")
+                // Reset searching state synchronously before returning
+                await MainActor.run {
+                    if self.searchingBookID == book.id {
+                        self.isSearching = false
+                        self.searchingBookID = nil
+                    }
+                }
                 return nil
             }
             
@@ -91,12 +95,26 @@ class CoverImageManager: ObservableObject {
                   let volumeInfo = firstItem["volumeInfo"] as? [String: Any],
                   let imageLinks = volumeInfo["imageLinks"] as? [String: Any] else {
                 print("⚠️ CoverImageManager: No cover image found for '\(book.title)'")
+                // Reset searching state synchronously before returning
+                await MainActor.run {
+                    if self.searchingBookID == book.id {
+                        self.isSearching = false
+                        self.searchingBookID = nil
+                    }
+                }
                 return nil
             }
             
             // Get the best available image URL (prefer thumbnail, fallback to smallThumbnail)
             guard let imageURLString = imageLinks["thumbnail"] as? String ?? imageLinks["smallThumbnail"] as? String else {
                 print("⚠️ CoverImageManager: No image URL in response")
+                // Reset searching state synchronously before returning
+                await MainActor.run {
+                    if self.searchingBookID == book.id {
+                        self.isSearching = false
+                        self.searchingBookID = nil
+                    }
+                }
                 return nil
             }
             
@@ -108,6 +126,13 @@ class CoverImageManager: ObservableObject {
             
             guard let imageURL = URL(string: secureImageURLString) else {
                 print("⚠️ CoverImageManager: Invalid image URL: \(secureImageURLString)")
+                // Reset searching state synchronously before returning
+                await MainActor.run {
+                    if self.searchingBookID == book.id {
+                        self.isSearching = false
+                        self.searchingBookID = nil
+                    }
+                }
                 return nil
             }
             
@@ -117,6 +142,15 @@ class CoverImageManager: ObservableObject {
             let downloadedURL = try await downloadImage(from: imageURL, to: coverURL)
             
             print("✅ CoverImageManager: Downloaded cover for '\(book.title)'")
+            
+            // Reset searching state synchronously before returning
+            await MainActor.run {
+                if self.searchingBookID == book.id {
+                    self.isSearching = false
+                    self.searchingBookID = nil
+                }
+            }
+            
             return downloadedURL
             
         } catch {
@@ -124,6 +158,15 @@ class CoverImageManager: ObservableObject {
             if let urlError = error as? URLError {
                 print("⚠️ CoverImageManager: URL Error - \(urlError.localizedDescription), code: \(urlError.code.rawValue)")
             }
+            
+            // Reset searching state synchronously before returning
+            await MainActor.run {
+                if self.searchingBookID == book.id {
+                    self.isSearching = false
+                    self.searchingBookID = nil
+                }
+            }
+            
             return nil
         }
     }
