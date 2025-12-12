@@ -18,10 +18,7 @@ struct PlayerView: View {
     }
     
     private var playerContent: some View {
-        ZStack {
-            Color(.systemBackground)
-                .ignoresSafeArea(.all, edges: .all)
-            
+        GeometryReader { geometry in
             ScrollView {
                 VStack(spacing: 0) {
                     // Error Message
@@ -30,7 +27,7 @@ struct PlayerView: View {
                     }
                     
                     // Cover Art Area
-                    coverArtSection
+                    coverArtSection(availableWidth: geometry.size.width)
                     
                     // Book Info
                     bookInfoSection
@@ -42,20 +39,22 @@ struct PlayerView: View {
                     timeDisplaySection
                     
                     // Control Buttons
-                    controlButtonsSection
+                    controlButtonsSection(availableWidth: geometry.size.width)
                     
                     // Chapter Navigation
-                    chapterNavigationSection
+                    chapterNavigationSection(availableWidth: geometry.size.width)
                     
                     // Stop Button
                     stopButtonSection
                     
-                    // Bottom padding for scroll
+                    // Bottom padding for scroll and tab bar
                     Spacer()
                         .frame(height: 20)
                 }
-                .padding()
+                .padding(.horizontal, 16)
+                .frame(width: geometry.size.width)
             }
+            .background(Color(.systemBackground))
         }
         .onChange(of: appState.currentBook?.id) { oldID, newID in
             // Only load book when it actually changes, not on every view appearance
@@ -115,22 +114,28 @@ struct PlayerView: View {
     }
     
     // MARK: - Cover Art Section
-    private var coverArtSection: some View {
+    private func coverArtSection(availableWidth: CGFloat) -> some View {
         VStack {
-            if let coverURL = appState.currentBook?.coverImageURL,
-               let image = UIImage(contentsOfFile: coverURL.path) {
+            let coverSize = min(280, availableWidth - 32) // Account for padding
+            let coverURL = appState.currentBook?.coverImageURL
+            
+            // Try to load the image - this will re-evaluate whenever currentBook or coverImageURL changes
+            if let url = coverURL,
+               FileManager.default.fileExists(atPath: url.path),
+               let image = UIImage(contentsOfFile: url.path) {
                 Image(uiImage: image)
                     .resizable()
                     .aspectRatio(contentMode: .fit)
-                    .frame(maxWidth: 280, maxHeight: 280)
+                    .frame(maxWidth: coverSize, maxHeight: coverSize)
                     .cornerRadius(12)
                     .shadow(radius: 10)
+                    .id(url.path) // Force re-render when URL changes
             } else {
                 // Placeholder with searching indicator
                 ZStack {
                     RoundedRectangle(cornerRadius: 12)
                         .fill(Color(.systemGray5))
-                        .frame(width: 280, height: 280)
+                        .frame(width: coverSize, height: coverSize)
                         .shadow(radius: 10)
                     
                     if coverManager.isSearching && coverManager.searchingBookID == appState.currentBook?.id {
@@ -148,10 +153,15 @@ struct PlayerView: View {
                             .foregroundColor(.gray)
                     }
                 }
+                .id(coverURL?.path ?? "no-cover") // Force re-render when cover URL changes
             }
         }
         .padding(.top, 20)
         .padding(.bottom, 30)
+        .onChange(of: appState.currentBook?.coverImageURL) { oldURL, newURL in
+            // Force view refresh when coverImageURL changes
+            // This ensures the image appears immediately when it's set
+        }
     }
     
     // MARK: - Book Info Section
@@ -216,123 +226,208 @@ struct PlayerView: View {
     }
     
     // MARK: - Control Buttons Section
-    private var controlButtonsSection: some View {
-        HStack(spacing: 20) {
-            // Playback Speed Button (Leftmost)
-            Button(action: {
-                showSpeedPicker = true
-            }) {
-                Text(String(format: "%.2fx", audioManager.playbackSpeed))
-                    .font(.system(size: 16, weight: .medium))
-                    .foregroundColor(.primary)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    .background(Color(.systemGray6))
-                    .cornerRadius(8)
-            }
-            .confirmationDialog("Playback Speed", isPresented: $showSpeedPicker, titleVisibility: .visible) {
-                Button("0.5x") { audioManager.setPlaybackSpeed(0.5) }
-                Button("0.75x") { audioManager.setPlaybackSpeed(0.75) }
-                Button("1x") { audioManager.setPlaybackSpeed(1.0) }
-                Button("1.25x") { audioManager.setPlaybackSpeed(1.25) }
-                Button("1.5x") { audioManager.setPlaybackSpeed(1.5) }
-                Button("1.75x") { audioManager.setPlaybackSpeed(1.75) }
-                Button("2x") { audioManager.setPlaybackSpeed(2.0) }
-                Button("Cancel", role: .cancel) { }
-            }
-            
-            Spacer()
-            
-            // Previous Chapter
-            Button(action: {
-                audioManager.previousChapter()
-            }) {
-                Image(systemName: "backward.end.fill")
-                    .font(.title2)
-                    .foregroundColor(audioManager.chapters.isEmpty ? .gray : .primary)
-            }
-            .disabled(audioManager.chapters.isEmpty)
-            
-            // Skip Backward 30s
-            Button(action: {
-                audioManager.skipBackward(interval: appState.playbackSettings.skipBackwardInterval)
-            }) {
-                Image(systemName: "gobackward.30")
-                    .font(.title)
-                    .foregroundColor(.primary)
-            }
-            
-            // Play/Pause
-            Button(action: {
-                if audioManager.isPlaying {
-                    audioManager.pause()
-                } else {
-                    audioManager.play()
+    private func controlButtonsSection(availableWidth: CGFloat) -> some View {
+        let isCompact = availableWidth < 600 // iPhone vs iPad threshold
+        
+        if isCompact {
+            // iPhone: Only main playback controls
+            return AnyView(
+                HStack(spacing: 12) {
+                    // Previous Chapter
+                    Button(action: {
+                        audioManager.previousChapter()
+                    }) {
+                        Image(systemName: "backward.end.fill")
+                            .font(.title3)
+                            .foregroundColor(audioManager.chapters.isEmpty ? .gray : .primary)
+                    }
+                    .disabled(audioManager.chapters.isEmpty)
+                    
+                    // Skip Backward
+                    Button(action: {
+                        audioManager.skipBackward(interval: appState.playbackSettings.skipBackwardInterval)
+                    }) {
+                        Image(systemName: "gobackward.30")
+                            .font(.title2)
+                            .foregroundColor(.primary)
+                    }
+                    
+                    // Play/Pause
+                    Button(action: {
+                        if audioManager.isPlaying {
+                            audioManager.pause()
+                        } else {
+                            audioManager.play()
+                        }
+                    }) {
+                        Image(systemName: audioManager.isPlaying ? "pause.circle.fill" : "play.circle.fill")
+                            .font(.system(size: 56))
+                            .foregroundColor(.blue)
+                    }
+                    
+                    // Skip Forward
+                    Button(action: {
+                        audioManager.skipForward(interval: appState.playbackSettings.skipForwardInterval)
+                    }) {
+                        Image(systemName: "goforward.30")
+                            .font(.title2)
+                            .foregroundColor(.primary)
+                    }
+                    
+                    // Next Chapter
+                    Button(action: {
+                        audioManager.nextChapter()
+                    }) {
+                        Image(systemName: "forward.end.fill")
+                            .font(.title3)
+                            .foregroundColor(audioManager.chapters.isEmpty ? .gray : .primary)
+                    }
+                    .disabled(audioManager.chapters.isEmpty)
                 }
-            }) {
-                Image(systemName: audioManager.isPlaying ? "pause.circle.fill" : "play.circle.fill")
-                    .font(.system(size: 64))
-                    .foregroundColor(.blue)
-            }
-            
-            // Skip Forward 30s
-            Button(action: {
-                audioManager.skipForward(interval: appState.playbackSettings.skipForwardInterval)
-            }) {
-                Image(systemName: "goforward.30")
-                    .font(.title)
-                    .foregroundColor(.primary)
-            }
-            
-            // Next Chapter
-            Button(action: {
-                audioManager.nextChapter()
-            }) {
-                Image(systemName: "forward.end.fill")
-                    .font(.title2)
-                    .foregroundColor(audioManager.chapters.isEmpty ? .gray : .primary)
-            }
-            .disabled(audioManager.chapters.isEmpty)
-            
-            Spacer()
-            
-            // Sleep Timer Button (Rightmost)
-            Button(action: {
-                if audioManager.isSleepTimerActive {
-                    audioManager.cancelSleepTimer()
-                } else {
-                    showSleepTimerPicker = true
+                .padding(.horizontal)
+                .padding(.bottom, 30)
+            )
+        } else {
+            // iPad: Single row with all controls
+            return AnyView(
+                HStack(spacing: 16) {
+                    // Playback Speed Button
+                    speedButton
+                    
+                    Spacer()
+                    
+                    // Previous Chapter
+                    Button(action: {
+                        audioManager.previousChapter()
+                    }) {
+                        Image(systemName: "backward.end.fill")
+                            .font(.title2)
+                            .foregroundColor(audioManager.chapters.isEmpty ? .gray : .primary)
+                    }
+                    .disabled(audioManager.chapters.isEmpty)
+                    
+                    // Skip Backward
+                    Button(action: {
+                        audioManager.skipBackward(interval: appState.playbackSettings.skipBackwardInterval)
+                    }) {
+                        Image(systemName: "gobackward.30")
+                            .font(.title)
+                            .foregroundColor(.primary)
+                    }
+                    
+                    // Play/Pause
+                    Button(action: {
+                        if audioManager.isPlaying {
+                            audioManager.pause()
+                        } else {
+                            audioManager.play()
+                        }
+                    }) {
+                        Image(systemName: audioManager.isPlaying ? "pause.circle.fill" : "play.circle.fill")
+                            .font(.system(size: 64))
+                            .foregroundColor(.blue)
+                    }
+                    
+                    // Skip Forward
+                    Button(action: {
+                        audioManager.skipForward(interval: appState.playbackSettings.skipForwardInterval)
+                    }) {
+                        Image(systemName: "goforward.30")
+                            .font(.title)
+                            .foregroundColor(.primary)
+                    }
+                    
+                    // Next Chapter
+                    Button(action: {
+                        audioManager.nextChapter()
+                    }) {
+                        Image(systemName: "forward.end.fill")
+                            .font(.title2)
+                            .foregroundColor(audioManager.chapters.isEmpty ? .gray : .primary)
+                    }
+                    .disabled(audioManager.chapters.isEmpty)
+                    
+                    Spacer()
+                    
+                    // Sleep Timer Button
+                    sleepTimerButton
                 }
-            }) {
-                Image(systemName: audioManager.isSleepTimerActive ? "moon.zzz.fill" : "moon.zzz")
-                    .font(.system(size: 18, weight: .medium))
-                    .foregroundColor(audioManager.isSleepTimerActive ? .blue : .primary)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    .background(audioManager.isSleepTimerActive ? Color.blue.opacity(0.1) : Color(.systemGray6))
-                    .cornerRadius(8)
-            }
-            .confirmationDialog("Sleep Timer", isPresented: $showSleepTimerPicker, titleVisibility: .visible) {
-                Button("15 minutes") { audioManager.startSleepTimer(duration: 15 * 60) }
-                Button("30 minutes") { audioManager.startSleepTimer(duration: 30 * 60) }
-                Button("45 minutes") { audioManager.startSleepTimer(duration: 45 * 60) }
-                Button("60 minutes") { audioManager.startSleepTimer(duration: 60 * 60) }
-                Button("Cancel", role: .cancel) { }
-            }
+                .padding(.horizontal)
+                .padding(.bottom, 30)
+            )
         }
-        .padding(.horizontal)
-        .padding(.bottom, 30)
+    }
+    
+    // MARK: - Helper Button Views
+    private var speedButton: some View {
+        Button(action: {
+            showSpeedPicker = true
+        }) {
+            Text(String(format: "%.2fx", audioManager.playbackSpeed))
+                .font(.system(size: 14, weight: .medium))
+                .foregroundColor(.primary)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(Color(.systemGray6))
+                .cornerRadius(8)
+        }
+        .confirmationDialog("Playback Speed", isPresented: $showSpeedPicker, titleVisibility: .visible) {
+            Button("0.5x") { audioManager.setPlaybackSpeed(0.5) }
+            Button("0.75x") { audioManager.setPlaybackSpeed(0.75) }
+            Button("1x") { audioManager.setPlaybackSpeed(1.0) }
+            Button("1.25x") { audioManager.setPlaybackSpeed(1.25) }
+            Button("1.5x") { audioManager.setPlaybackSpeed(1.5) }
+            Button("1.75x") { audioManager.setPlaybackSpeed(1.75) }
+            Button("2x") { audioManager.setPlaybackSpeed(2.0) }
+            Button("Cancel", role: .cancel) { }
+        }
+    }
+    
+    private var sleepTimerButton: some View {
+        Button(action: {
+            if audioManager.isSleepTimerActive {
+                audioManager.cancelSleepTimer()
+            } else {
+                showSleepTimerPicker = true
+            }
+        }) {
+            Image(systemName: audioManager.isSleepTimerActive ? "moon.zzz.fill" : "moon.zzz")
+                .font(.system(size: 16, weight: .medium))
+                .foregroundColor(audioManager.isSleepTimerActive ? .blue : .primary)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(audioManager.isSleepTimerActive ? Color.blue.opacity(0.1) : Color(.systemGray6))
+                .cornerRadius(8)
+        }
+        .confirmationDialog("Sleep Timer", isPresented: $showSleepTimerPicker, titleVisibility: .visible) {
+            Button("15 minutes") { audioManager.startSleepTimer(duration: 15 * 60) }
+            Button("30 minutes") { audioManager.startSleepTimer(duration: 30 * 60) }
+            Button("45 minutes") { audioManager.startSleepTimer(duration: 45 * 60) }
+            Button("60 minutes") { audioManager.startSleepTimer(duration: 60 * 60) }
+            Button("Cancel", role: .cancel) { }
+        }
     }
     
     // MARK: - Chapter Navigation Section
-    private var chapterNavigationSection: some View {
-        VStack(spacing: 12) {
+    private func chapterNavigationSection(availableWidth: CGFloat) -> some View {
+        let isCompact = availableWidth < 600 // iPhone vs iPad threshold
+        
+        return VStack(spacing: 12) {
             if !audioManager.chapters.isEmpty {
                 HStack {
                     Text("Chapters")
                         .font(.headline)
                         .foregroundColor(.secondary)
+                    
                     Spacer()
+                    
+                    // On iPhone, show Speed and Sleep Timer buttons here
+                    if isCompact {
+                        HStack(spacing: 8) {
+                            speedButton
+                            sleepTimerButton
+                        }
+                    }
                 }
                 .padding(.horizontal)
                 

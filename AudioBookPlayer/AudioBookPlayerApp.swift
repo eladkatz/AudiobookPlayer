@@ -41,6 +41,7 @@ struct AudioBookPlayerApp: App {
             await MainActor.run {
                 var updatedBooks = appState.books
                 var hasChanges = false
+                var currentBookID: UUID? = appState.currentBook?.id
                 
                 for (index, book) in updatedBooks.enumerated() {
                     if let coverURL = downloadedCovers[book.id] {
@@ -52,6 +53,15 @@ struct AudioBookPlayerApp: App {
                 if hasChanges {
                     appState.books = updatedBooks
                     PersistenceManager.shared.saveBooks(updatedBooks)
+                    
+                    // Update currentBook if it matches one of the updated books
+                    if let currentID = currentBookID,
+                       let updatedCurrentBook = updatedBooks.first(where: { $0.id == currentID }) {
+                        var updatedCurrent = updatedCurrentBook
+                        // Preserve the current position that was loaded earlier
+                        updatedCurrent.currentPosition = appState.currentBook?.currentPosition ?? 0
+                        appState.currentBook = updatedCurrent
+                    }
                 }
             }
         }

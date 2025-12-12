@@ -1,6 +1,8 @@
 import AVFoundation
 import Combine
 import Foundation
+import MediaPlayer
+import UIKit
 
 class AudioManager: NSObject, ObservableObject {
     static let shared = AudioManager()
@@ -15,6 +17,8 @@ class AudioManager: NSObject, ObservableObject {
     @Published var sleepTimerRemaining: TimeInterval = 0
     @Published var isSleepTimerActive: Bool = false
     @Published var sleepTimerInitialDuration: TimeInterval = 0 // Total duration for tick calculation
+    @Published var showInterruptionToast: Bool = false
+    @Published var interruptionToastMessage: String = ""
     
     private var player: AVPlayer?
     private var playerItem: AVPlayerItem?
@@ -25,19 +29,27 @@ class AudioManager: NSObject, ObservableObject {
     private var rateObserver: NSKeyValueObservation?
     private var currentBookURL: URL? // Track current book URL for security-scoped access
     private var currentBookID: UUID? // Track currently loaded book ID to avoid unnecessary reloads
+    private var currentBook: Book? // Store current book for Now Playing metadata
     private var hasSecurityAccess: Bool = false // Track if we started security-scoped access
     private var isPlayerReady: Bool = false // Track if player is ready to play
     private var wasPlayingBeforeInterruption: Bool = false // Track playback state before interruption
+    private var nowPlayingUpdateTimer: Timer? // Timer to update Now Playing elapsed time
+    private var interruptionResumeTask: Task<Void, Never>? // Task to handle delayed resume after interruption
     
     private override init() {
         super.init()
         setupAudioSession()
         setupInterruptionNotifications()
+        setupRouteChangeNotifications()
+        setupRemoteCommandCenter()
     }
     
     // MARK: - Audio Session Setup
     private func setupAudioSession() {
         do {
+            // Use .playback category with .spokenAudio mode
+            // This category will be interrupted by notification sounds by default
+            // No special options needed - iOS will handle interruptions automatically
             try AVAudioSession.sharedInstance().setCategory(.playback, mode: .spokenAudio)
             try AVAudioSession.sharedInstance().setActive(true)
         } catch {
@@ -53,6 +65,243 @@ class AudioManager: NSObject, ObservableObject {
             name: AVAudioSession.interruptionNotification,
             object: AVAudioSession.sharedInstance()
         )
+    }
+    
+    // MARK: - Route Change Handling (for text messages and other audio)
+    private func setupRouteChangeNotifications() {
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleRouteChange(_:)),
+            name: AVAudioSession.routeChangeNotification,
+            object: AVAudioSession.sharedInstance()
+        )
+    }
+    
+    @objc private func handleRouteChange(_ notification: Notification) {
+        // Route changes can indicate interruptions, but we'll rely on interruption notifications
+        // and the audio session category to handle them properly
+    }
+    
+    private func handleAudioInterruption(reason: String) {
+        // Only handle if we're currently playing
+        guard isPlaying else { return }
+        
+        // Cancel any existing resume task
+        interruptionResumeTask?.cancel()
+        
+        // Remember we were playing
+        wasPlayingBeforeInterruption = true
+        
+        // Pause playback
+        pause()
+        
+        // Don't show toast here - it will show when playback resumes
+        print("🔇 AudioManager: Audio interrupted by \(reason), paused playback")
+        
+        // Set up a delayed check to resume when interruption ends
+        // This handles cases where the interruption notification might not fire properly (like WhatsApp)
+        interruptionResumeTask = Task { @MainActor [weak self] in
+            guard let self = self else { return }
+            
+            // Wait a bit for the interruption to end (notification sounds are usually short)
+            try? await Task.sleep(nanoseconds: 500_000_000) // 0.5 seconds
+            
+            // Check if task was cancelled (interruption notification handled it)
+            guard !Task.isCancelled else { return }
+            
+            // If we're still paused and were playing before, check if we should resume
+            if !self.isPlaying && self.wasPlayingBeforeInterruption && self.isPlayerReady {
+                // Check if interruption has ended (audio session is active again)
+                let session = AVAudioSession.sharedInstance()
+                if !session.secondaryAudioShouldBeSilencedHint {
+                    // Interruption seems to have ended, resume with rewind
+                    let settings = PersistenceManager.shared.loadSettings()
+                    let rewindAmount = settings.rewindAfterInterruption
+                    
+                    if rewindAmount > 0 {
+                        let newTime = max(0, self.currentTime - rewindAmount)
+                        self.seek(to: newTime) { [weak self] in
+                            guard let self = self, self.isPlayerReady else { return }
+                            self.play()
+                            self.showInterruptionToast(message: "Resumed after notification (rewound \(Int(rewindAmount))s)")
+                            self.wasPlayingBeforeInterruption = false
+                        }
+                    } else {
+                        self.play()
+                        self.showInterruptionToast(message: "Resumed after notification")
+                        self.wasPlayingBeforeInterruption = false
+                    }
+                }
+            }
+        }
+    }
+    
+    // MARK: - Now Playing Integration
+    private func setupRemoteCommandCenter() {
+        let commandCenter = MPRemoteCommandCenter.shared()
+        
+        // Play/Pause commands
+        commandCenter.playCommand.addTarget { [weak self] _ in
+            self?.play()
+            return .success
+        }
+        
+        commandCenter.pauseCommand.addTarget { [weak self] _ in
+            self?.pause()
+            return .success
+        }
+        
+        commandCenter.togglePlayPauseCommand.addTarget { [weak self] _ in
+            guard let self = self else { return .commandFailed }
+            if self.isPlaying {
+                self.pause()
+            } else {
+                self.play()
+            }
+            return .success
+        }
+        
+        // Chapter navigation (using next/previous track commands)
+        commandCenter.nextTrackCommand.addTarget { [weak self] _ in
+            self?.nextChapter()
+            return .success
+        }
+        
+        commandCenter.previousTrackCommand.addTarget { [weak self] _ in
+            self?.previousChapter()
+            return .success
+        }
+        
+        // Skip forward/backward (using configured intervals)
+        commandCenter.skipForwardCommand.addTarget { [weak self] event in
+            guard let self = self else {
+                return .commandFailed
+            }
+            let settings = PersistenceManager.shared.loadSettings()
+            self.skipForward(interval: settings.skipForwardInterval)
+            return .success
+        }
+        
+        commandCenter.skipBackwardCommand.addTarget { [weak self] event in
+            guard let self = self else {
+                return .commandFailed
+            }
+            let settings = PersistenceManager.shared.loadSettings()
+            self.skipBackward(interval: settings.skipBackwardInterval)
+            return .success
+        }
+        
+        // Set skip intervals from settings (will be updated when settings change)
+        updateSkipIntervals()
+        
+        // Seek/scrub support
+        commandCenter.changePlaybackPositionCommand.addTarget { [weak self] event in
+            guard let self = self,
+                  let event = event as? MPChangePlaybackPositionCommandEvent else {
+                return .commandFailed
+            }
+            self.seek(to: event.positionTime)
+            return .success
+        }
+        
+        // Playback speed control
+        commandCenter.changePlaybackRateCommand.addTarget { [weak self] event in
+            guard let self = self,
+                  let event = event as? MPChangePlaybackRateCommandEvent else {
+                return .commandFailed
+            }
+            self.setPlaybackSpeed(Double(event.playbackRate))
+            return .success
+        }
+        
+        // Disable commands not relevant for audiobooks
+        commandCenter.changeRepeatModeCommand.isEnabled = false
+        commandCenter.changeShuffleModeCommand.isEnabled = false
+    }
+    
+    private func updateNowPlayingInfo() {
+        guard let book = currentBook else {
+            MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+            return
+        }
+        
+        var nowPlayingInfo: [String: Any] = [:]
+        
+        // Format title with sleep timer info if active
+        var displayTitle = book.title
+        if isSleepTimerActive && sleepTimerRemaining > 0 {
+            let timerString = formatTimerTime(sleepTimerRemaining)
+            displayTitle = "\(book.title) (⏰ \(timerString))"
+        }
+        
+        // Basic metadata
+        nowPlayingInfo[MPMediaItemPropertyTitle] = displayTitle
+        nowPlayingInfo[MPMediaItemPropertyArtist] = book.author ?? "Unknown Author"
+        nowPlayingInfo[MPMediaItemPropertyGenre] = "Audiobook"
+        nowPlayingInfo[MPMediaItemPropertyPlaybackDuration] = duration
+        nowPlayingInfo[MPNowPlayingInfoPropertyElapsedPlaybackTime] = currentTime
+        nowPlayingInfo[MPNowPlayingInfoPropertyPlaybackRate] = isPlaying ? playbackSpeed : 0.0
+        nowPlayingInfo[MPNowPlayingInfoPropertyIsLiveStream] = false
+        
+        // Note: Chapter information properties (MPMediaItemPropertyChapterNumber, MPMediaItemPropertyChapterCount)
+        // are not available in the MediaPlayer framework for Now Playing info
+        
+        // Artwork
+        if let coverURL = book.coverImageURL,
+           FileManager.default.fileExists(atPath: coverURL.path),
+           let image = UIImage(contentsOfFile: coverURL.path) {
+            let artwork = MPMediaItemArtwork(boundsSize: image.size) { _ in
+                return image
+            }
+            nowPlayingInfo[MPMediaItemPropertyArtwork] = artwork
+        } else {
+            // Try covers directory
+            let coversDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+                .appendingPathComponent("Covers")
+            let coverURL = coversDir.appendingPathComponent("\(book.id.uuidString).jpg")
+            if FileManager.default.fileExists(atPath: coverURL.path),
+               let image = UIImage(contentsOfFile: coverURL.path) {
+                let artwork = MPMediaItemArtwork(boundsSize: image.size) { _ in
+                    return image
+                }
+                nowPlayingInfo[MPMediaItemPropertyArtwork] = artwork
+            }
+        }
+        
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = nowPlayingInfo
+    }
+    
+    private func startNowPlayingUpdates() {
+        stopNowPlayingUpdates()
+        nowPlayingUpdateTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+            self?.updateNowPlayingInfo()
+        }
+    }
+    
+    private func stopNowPlayingUpdates() {
+        nowPlayingUpdateTimer?.invalidate()
+        nowPlayingUpdateTimer = nil
+    }
+    
+    private func updateSkipIntervals() {
+        let commandCenter = MPRemoteCommandCenter.shared()
+        let settings = PersistenceManager.shared.loadSettings()
+        commandCenter.skipForwardCommand.preferredIntervals = [NSNumber(value: settings.skipForwardInterval)]
+        commandCenter.skipBackwardCommand.preferredIntervals = [NSNumber(value: settings.skipBackwardInterval)]
+    }
+    
+    // MARK: - Helper Methods
+    private func formatTimerTime(_ time: TimeInterval) -> String {
+        let totalSeconds = Int(time)
+        let hours = totalSeconds / 3600
+        let minutes = (totalSeconds % 3600) / 60
+        let seconds = totalSeconds % 60
+        
+        if hours > 0 {
+            return String(format: "%02d:%02d:%02d", hours, minutes, seconds)
+        } else {
+            return String(format: "%02d:%02d", minutes, seconds)
+        }
     }
     
     @objc private func handleInterruption(_ notification: Notification) {
@@ -72,8 +321,13 @@ class AudioManager: NSObject, ObservableObject {
             }
             
         case .ended:
+            // Cancel any delayed resume task since the interruption notification handled it
+            interruptionResumeTask?.cancel()
+            interruptionResumeTask = nil
+            
             // Interruption ended - check if we should resume
             guard let optionsValue = userInfo[AVAudioSessionInterruptionOptionKey] as? UInt else {
+                wasPlayingBeforeInterruption = false
                 return
             }
             let options = AVAudioSession.InterruptionOptions(rawValue: optionsValue)
@@ -90,11 +344,15 @@ class AudioManager: NSObject, ObservableObject {
                         // Resume after seek completes
                         guard let self = self, self.isPlayerReady else { return }
                         self.play()
+                        // Show toast notification when resuming after rewind
+                        self.showInterruptionToast(message: "Resumed after interruption (rewound \(Int(rewindAmount))s)")
                         print("▶️ AudioManager: Interruption ended, rewound \(rewindAmount)s and resumed playback")
                     }
                 } else {
                     // No rewind, just resume
                     play()
+                    // Show toast notification when resuming (no rewind)
+                    showInterruptionToast(message: "Resumed after interruption")
                     print("▶️ AudioManager: Interruption ended, resumed playback (no rewind)")
                 }
             }
@@ -103,6 +361,25 @@ class AudioManager: NSObject, ObservableObject {
             
         @unknown default:
             break
+        }
+    }
+    
+    // MARK: - Toast Notification
+    private func showInterruptionToast(message: String) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            self.interruptionToastMessage = message
+            self.showInterruptionToast = true
+            
+            // Get rewind amount from settings to determine toast duration
+            let settings = PersistenceManager.shared.loadSettings()
+            let rewindAmount = max(settings.rewindAfterInterruption, 1.0) // At least 1 second
+            
+            // Hide toast after rewind duration
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: UInt64(rewindAmount * 1_000_000_000))
+                self.showInterruptionToast = false
+            }
         }
     }
     
@@ -121,8 +398,9 @@ class AudioManager: NSObject, ObservableObject {
         wasPlayingBeforeInterruption = false // Reset interruption state when loading new book
         stop()
         
-        // Track the current book ID
+        // Track the current book ID and store book reference
         currentBookID = book.id
+        currentBook = book
         
         // Remove previous observers
         statusObserver?.invalidate()
@@ -255,6 +533,9 @@ class AudioManager: NSObject, ObservableObject {
         let settings = PersistenceManager.shared.loadSettings()
         setPlaybackSpeed(settings.playbackSpeed)
         
+        // Update Now Playing info
+        updateNowPlayingInfo()
+        
         // Observe playback end
         NotificationCenter.default.addObserver(
             self,
@@ -318,6 +599,7 @@ class AudioManager: NSObject, ObservableObject {
         
         self.chapters = parsedChapters
         self.updateCurrentChapterIndex()
+        self.updateNowPlayingInfo() // Update Now Playing with chapter info
     }
     
     // MARK: - Simulated Chapters
@@ -363,11 +645,14 @@ class AudioManager: NSObject, ObservableObject {
         player.rate = Float(playbackSpeed)
         player.play()
         // isPlaying will be updated by rate observer
+        startNowPlayingUpdates()
+        updateNowPlayingInfo()
     }
     
     func pause() {
         player?.pause()
         // isPlaying will be updated by rate observer
+        updateNowPlayingInfo()
     }
     
     func stop() {
@@ -378,6 +663,11 @@ class AudioManager: NSObject, ObservableObject {
         wasPlayingBeforeInterruption = false // Reset interruption state
         cancelSleepTimer() // Cancel sleep timer when stopping
         currentBookID = nil // Clear current book ID when stopping
+        currentBook = nil // Clear current book reference
+        stopNowPlayingUpdates()
+        interruptionResumeTask?.cancel()
+        interruptionResumeTask = nil
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
         // Note: Don't remove time observer here - it will be removed when loading a new book
         // Note: Don't reset isPlayerReady here - it will be reset when loading a new book
     }
@@ -405,6 +695,7 @@ class AudioManager: NSObject, ObservableObject {
             DispatchQueue.main.async {
                 self.currentTime = time
                 self.updateCurrentChapterIndex()
+                self.updateNowPlayingInfo() // Update Now Playing after seek
                 
                 // Resume playback if it was playing before seek
                 if wasPlaying && self.isPlayerReady {
@@ -454,6 +745,7 @@ class AudioManager: NSObject, ObservableObject {
         if isPlaying, let player = player {
             player.rate = Float(speed)
         }
+        updateNowPlayingInfo() // Update Now Playing with new speed
     }
     
     // MARK: - Sleep Timer
@@ -464,6 +756,7 @@ class AudioManager: NSObject, ObservableObject {
         sleepTimerRemaining = duration
         sleepTimerInitialDuration = duration
         isSleepTimerActive = true
+        updateNowPlayingInfo() // Update Now Playing with sleep timer info
         
         // Start countdown task
         sleepTimerTask = Task { @MainActor in
@@ -481,12 +774,14 @@ class AudioManager: NSObject, ObservableObject {
                 }
                 
                 sleepTimerRemaining -= 1
+                updateNowPlayingInfo() // Update Now Playing every second with remaining time
                 
                 // Stop playback when timer reaches 0
                 if sleepTimerRemaining <= 0 {
                     pause()
                     isSleepTimerActive = false
                     sleepTimerTask = nil
+                    updateNowPlayingInfo() // Update Now Playing to remove timer info
                     break
                 }
             }
@@ -499,12 +794,14 @@ class AudioManager: NSObject, ObservableObject {
         isSleepTimerActive = false
         sleepTimerRemaining = 0
         sleepTimerInitialDuration = 0
+        updateNowPlayingInfo() // Update Now Playing to remove timer info
     }
     
     func extendSleepTimer(additionalMinutes: TimeInterval = 600) {
         guard isSleepTimerActive else { return }
         sleepTimerRemaining += additionalMinutes
         sleepTimerInitialDuration += additionalMinutes // Update total duration for tick recalculation
+        updateNowPlayingInfo() // Update Now Playing with new timer duration
     }
     
     // MARK: - Rate Observer
@@ -515,12 +812,22 @@ class AudioManager: NSObject, ObservableObject {
         
         rateObserver = player.observe(\.rate, options: [.new]) { [weak self] player, _ in
             DispatchQueue.main.async {
+                guard let self = self else { return }
+                
                 // Update isPlaying based on actual playback rate
-                let wasPlaying = self?.isPlaying ?? false
+                let wasPlaying = self.isPlaying
                 let isNowPlaying = player.rate > 0
                 
                 if wasPlaying != isNowPlaying {
-                    self?.isPlaying = isNowPlaying
+                    self.isPlaying = isNowPlaying
+                    self.updateNowPlayingInfo() // Update Now Playing when playback state changes
+                    
+                    // Start/stop update timer based on playback state
+                    if isNowPlaying {
+                        self.startNowPlayingUpdates()
+                    } else {
+                        self.stopNowPlayingUpdates()
+                    }
                 }
             }
         }
@@ -557,6 +864,7 @@ class AudioManager: NSObject, ObservableObject {
             if currentTime >= chapter.startTime && currentTime < chapter.endTime {
                 if currentChapterIndex != index {
                     currentChapterIndex = index
+                    updateNowPlayingInfo() // Update Now Playing when chapter changes
                 }
                 return
             }

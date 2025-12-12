@@ -8,6 +8,9 @@ struct GoogleDrivePickerView: View {
     @State private var folderContents: [GoogleDriveFile] = []
     @State private var isLoading = false
     @State private var errorMessage: String?
+    @State private var searchText = ""
+    @State private var isSearching = false
+    @State private var searchResults: [GoogleDriveFile] = []
     
     var onM4BSelected: ((String, String) -> Void)? // (m4bFileID, folderID)
     
@@ -26,14 +29,34 @@ struct GoogleDrivePickerView: View {
                     authenticationView
                 } else if isLoading {
                     ProgressView("Loading...")
+                } else if isSearching {
+                    searchResultsView
                 } else {
                     folderContentsView
                 }
             }
-            .navigationTitle(currentFolderName)
+            .navigationTitle(isSearching ? "Search" : currentFolderName)
+            .searchable(text: $searchText, isPresented: $isSearching, prompt: "Search files and folders")
+            .onSubmit(of: .search) {
+                Task {
+                    await performSearch()
+                }
+            }
+            .onChange(of: searchText) { oldValue, newValue in
+                if newValue.isEmpty && isSearching {
+                    // Clear search results when search text is cleared
+                    searchResults = []
+                }
+            }
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
-                    if navigationStack.count > 1 {
+                    if isSearching {
+                        Button("Cancel") {
+                            isSearching = false
+                            searchText = ""
+                            searchResults = []
+                        }
+                    } else if navigationStack.count > 1 {
                         Button("Back") {
                             navigationStack.removeLast()
                             Task {
@@ -47,7 +70,7 @@ struct GoogleDrivePickerView: View {
                     }
                 }
                 
-                if driveManager.isAuthenticated {
+                if driveManager.isAuthenticated && !isSearching {
                     ToolbarItem(placement: .navigationBarTrailing) {
                         Button("Sign Out") {
                             driveManager.signOut()
@@ -128,6 +151,30 @@ struct GoogleDrivePickerView: View {
                 Text("No files or folders found")
                     .foregroundColor(.secondary)
             } else {
+                // Shortcuts section (resolved automatically)
+                let shortcuts = folderContents.filter { $0.mimeType == "application/vnd.google-apps.shortcut" }
+                if !shortcuts.isEmpty {
+                    Section("Shortcuts") {
+                        ForEach(shortcuts, id: \.id) { shortcut in
+                            Button(action: {
+                                Task {
+                                    await navigateToShortcut(shortcut: shortcut)
+                                }
+                            }) {
+                                HStack {
+                                    Image(systemName: "arrow.triangle.branch")
+                                        .foregroundColor(.orange)
+                                    Text(shortcut.name)
+                                    Spacer()
+                                    Image(systemName: "chevron.right")
+                                        .foregroundColor(.secondary)
+                                        .font(.caption)
+                                }
+                            }
+                        }
+                    }
+                }
+                
                 // Folders section
                 let folders = folderContents.filter { $0.mimeType == "application/vnd.google-apps.folder" }
                 if !folders.isEmpty {
@@ -151,7 +198,10 @@ struct GoogleDrivePickerView: View {
                 }
                 
                 // Files section
-                let files = folderContents.filter { $0.mimeType != "application/vnd.google-apps.folder" }
+                let files = folderContents.filter { 
+                    $0.mimeType != "application/vnd.google-apps.folder" && 
+                    $0.mimeType != "application/vnd.google-apps.shortcut"
+                }
                 if !files.isEmpty {
                     Section("Files") {
                         ForEach(files, id: \.id) { file in
@@ -303,5 +353,147 @@ struct GoogleDrivePickerView: View {
         formatter.allowedUnits = [.useKB, .useMB, .useGB]
         formatter.countStyle = .file
         return formatter.string(fromByteCount: bytes)
+    }
+    
+    // MARK: - Search Results View
+    
+    private var searchResultsView: some View {
+        List {
+            if searchResults.isEmpty && !searchText.isEmpty {
+                Text("No results found")
+                    .foregroundColor(.secondary)
+            } else if searchResults.isEmpty {
+                Text("Enter a search term")
+                    .foregroundColor(.secondary)
+            } else {
+                // Group results by type
+                let shortcuts = searchResults.filter { $0.mimeType == "application/vnd.google-apps.shortcut" }
+                let folders = searchResults.filter { $0.mimeType == "application/vnd.google-apps.folder" }
+                let files = searchResults.filter { 
+                    $0.mimeType != "application/vnd.google-apps.folder" && 
+                    $0.mimeType != "application/vnd.google-apps.shortcut"
+                }
+                
+                if !shortcuts.isEmpty {
+                    Section("Shortcuts") {
+                        ForEach(shortcuts, id: \.id) { shortcut in
+                            Button(action: {
+                                Task {
+                                    await navigateToShortcut(shortcut: shortcut)
+                                }
+                            }) {
+                                HStack {
+                                    Image(systemName: "arrow.triangle.branch")
+                                        .foregroundColor(.orange)
+                                    Text(shortcut.name)
+                                    Spacer()
+                                    Image(systemName: "chevron.right")
+                                        .foregroundColor(.secondary)
+                                        .font(.caption)
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                if !folders.isEmpty {
+                    Section("Folders") {
+                        ForEach(folders, id: \.id) { folder in
+                            Button(action: {
+                                isSearching = false
+                                searchText = ""
+                                searchResults = []
+                                navigateToFolder(folderID: folder.id, folderName: folder.name)
+                            }) {
+                                HStack {
+                                    Image(systemName: "folder.fill")
+                                        .foregroundColor(.blue)
+                                    Text(folder.name)
+                                    Spacer()
+                                    Image(systemName: "chevron.right")
+                                        .foregroundColor(.secondary)
+                                        .font(.caption)
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                if !files.isEmpty {
+                    Section("Files") {
+                        ForEach(files, id: \.id) { file in
+                            fileRow(for: file)
+                        }
+                    }
+                }
+            }
+        }
+        .refreshable {
+            if !searchText.isEmpty {
+                await performSearch()
+            }
+        }
+    }
+    
+    // MARK: - Search Methods
+    
+    private func performSearch() async {
+        guard !searchText.trimmingCharacters(in: .whitespaces).isEmpty else {
+            searchResults = []
+            return
+        }
+        
+        await MainActor.run {
+            isLoading = true
+            errorMessage = nil
+        }
+        
+        do {
+            let results = try await driveManager.searchFiles(query: searchText)
+            await MainActor.run {
+                self.searchResults = results
+                self.isLoading = false
+            }
+        } catch {
+            await MainActor.run {
+                self.errorMessage = error.localizedDescription
+                self.isLoading = false
+            }
+        }
+    }
+    
+    // MARK: - Shortcut Navigation
+    
+    private func navigateToShortcut(shortcut: GoogleDriveFile) async {
+        await MainActor.run {
+            isLoading = true
+            errorMessage = nil
+        }
+        
+        do {
+            // Resolve the shortcut to its target
+            let target = try await driveManager.resolveShortcut(shortcutID: shortcut.id)
+            
+            // Check if target is a folder
+            if target.mimeType == "application/vnd.google-apps.folder" {
+                await MainActor.run {
+                    isSearching = false
+                    searchText = ""
+                    searchResults = []
+                }
+                navigateToFolder(folderID: target.id, folderName: target.name)
+            } else {
+                // Target is a file - can't navigate to it, but we can show an error
+                await MainActor.run {
+                    errorMessage = "Shortcut points to a file, not a folder"
+                    isLoading = false
+                }
+            }
+        } catch {
+            await MainActor.run {
+                errorMessage = "Failed to resolve shortcut: \(error.localizedDescription)"
+                isLoading = false
+            }
+        }
     }
 }

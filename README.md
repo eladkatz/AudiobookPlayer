@@ -4,18 +4,23 @@ A modern iOS audiobook player app built with SwiftUI, featuring local file impor
 
 ## Features
 
-- 📚 **Library Management**: Organize and manage your audiobook collection
+- 📚 **Library Management**: Organize and manage your audiobook collection with visual progress tracking
 - 🎵 **Audio Playback**: Full-featured audio player with playback controls
 - ⏯️ **Playback Controls**: Play, pause, skip forward/backward, speed control
-- 📍 **Position Tracking**: Automatically saves and restores playback position
+- 📍 **Position Tracking**: Automatically saves and restores playback position for each book
+- 📊 **Progress Display**: Chapter-based progress bars and status indicators (Started, In-Progress, Done) in library view
 - 📖 **Chapter Navigation**: Navigate by chapters with next/previous controls
 - 🔄 **Simulated Chapters**: Automatically generate chapters for books without CUE files (configurable length)
 - ⏱️ **Sleep Timer**: Full-screen sleep timer with visual countdown and progress indicator
 - ⚡ **Playback Speed Control**: Quick access speed selector (0.5x - 2.0x) directly from player
-- ☁️ **Google Drive Integration**: Import audiobooks directly from Google Drive
+- ☁️ **Google Drive Integration**: Import audiobooks directly from Google Drive with folder navigation and search
+- 🔗 **Google Drive Shortcuts**: Navigate through Google Drive shortcuts as if they were folders
+- 🔍 **Google Drive Search**: Search for files and folders by name in Google Drive
 - 📁 **Local File Import**: Import M4B files from your device
 - 🖼️ **Automatic Cover Art**: Automatically searches and downloads book covers from Google Books API
-- ⚙️ **Customizable Settings**: Adjust skip intervals, chapter simulation, and more
+- 🔔 **Audio Interruption Handling**: Automatically pauses and resumes playback with configurable rewind on interruptions
+- 📱 **Now Playing Integration**: Lock screen and Control Center controls with chapter navigation and speed control
+- ⚙️ **Customizable Settings**: Adjust skip intervals, chapter simulation, interruption handling, and more
 - 💾 **Persistent Storage**: All data is saved locally and persists between app launches
 
 ## Requirements
@@ -108,12 +113,16 @@ Manages audio playback using AVFoundation. Handles:
 - Chapter navigation (next/previous)
 - Simulated chapter generation for books without CUE files
 - Sleep timer with countdown and automatic playback pause
+- Audio interruption handling (pauses on notifications/calls, resumes with configurable rewind)
+- Now Playing integration (Lock Screen/Control Center) with chapter navigation and speed control
 - Error handling
 
 ### GoogleDriveManager
 Handles Google Drive integration:
-- OAuth authentication
-- File browsing and navigation
+- OAuth authentication with persistent sign-in (keychain-based)
+- File browsing and navigation with hierarchical folder support
+- Shortcut resolution (follows Google Drive shortcuts to target folders)
+- Search functionality to find files and folders by name
 - File downloading with progress tracking
 - Automatic discovery of related files (CUE, images, NFO)
 
@@ -175,8 +184,10 @@ The app supports importing audiobooks directly from Google Drive. To set this up
 
 ### Playing Books
 
-1. Tap a book in the Library to open it
-2. Use the player controls:
+1. **Selecting a Book**:
+   - Tap any book in the Library to automatically start playback and switch to the "Now Playing" view
+   - Playback resumes from your last position automatically
+2. **Player Controls**:
    - Play/Pause
    - Skip forward/backward (configurable intervals)
    - Adjust playback speed (tap speed button for quick selection: 0.5x - 2.0x)
@@ -193,11 +204,17 @@ The app supports importing audiobooks directly from Google Drive. To set this up
    - Visual progress indicator with 60 ticks showing elapsed/remaining time
    - Cancel or extend timer (+10 minutes) directly from full-screen view
    - Automatically pauses playback when timer expires
+5. **Library Progress Tracking**:
+   - Each book shows its progress status: "Started", "In-Progress", or "Done"
+   - Chapter-based progress bar shows how many chapters you've completed
+   - "Chapter x/y" display shows current chapter out of total chapters
+   - Progress updates in real-time as you listen
 
 ### Managing Books
 
 - **Delete**: Swipe left on a book and tap "Delete", or use the standard swipe-to-delete gesture
-- **Position**: Playback position is automatically saved and restored
+- **Position**: Playback position is automatically saved and restored for each book independently
+- **Progress**: View your reading progress at a glance with status badges and chapter progress bars
 
 ## Development
 

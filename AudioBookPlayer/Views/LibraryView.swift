@@ -13,7 +13,7 @@ struct LibraryView: View {
                     emptyStateView
                 } else {
                     ForEach(appState.books) { book in
-                        BookRow(book: book)
+                        BookRow(book: book, appState: appState)
                             .contentShape(Rectangle())
                             .onTapGesture {
                                 selectBook(book)
@@ -90,12 +90,17 @@ struct LibraryView: View {
     
     // MARK: - Actions
     private func selectBook(_ book: Book) {
-        appState.currentBook = book
         // Update position from persistence
         let savedPosition = PersistenceManager.shared.loadPosition(for: book.id)
         var updatedBook = book
         updatedBook.currentPosition = savedPosition
+        
+        // Set current book first to trigger tab switch
         appState.currentBook = updatedBook
+        
+        // Load and start playback
+        AudioManager.shared.loadBook(updatedBook)
+        AudioManager.shared.play()
     }
     
     private func deleteBook(_ book: Book, showConfirmation: Bool = true) {
@@ -158,6 +163,57 @@ struct LibraryView: View {
 // MARK: - Book Row
 struct BookRow: View {
     let book: Book
+    @ObservedObject var appState: AppState
+    
+    private func statusBadge(for book: Book) -> some View {
+        let status: (text: String, color: Color)
+        
+        if book.duration > 0 {
+            let progress = book.currentPosition / book.duration
+            if progress >= 0.99 {
+                status = ("Done", .green)
+            } else if book.currentPosition > 0 {
+                status = ("In-Progress", .blue)
+            } else {
+                status = ("Started", .orange)
+            }
+        } else {
+            status = ("Started", .orange)
+        }
+        
+        return Text(status.text)
+            .font(.caption2)
+            .fontWeight(.semibold)
+            .foregroundColor(.white)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(status.color)
+            .cornerRadius(4)
+    }
+    
+    private func calculateChapterProgress() -> (currentChapter: Int, totalChapters: Int, progress: Double) {
+        guard book.duration > 0 else {
+            return (0, 0, 0.0)
+        }
+        
+        let settings = appState.playbackSettings
+        let chapterLength = settings.simulatedChapterLength
+        
+        // Calculate total chapters
+        let totalChapters = max(1, Int(ceil(book.duration / chapterLength)))
+        
+        // Calculate current chapter (1-based)
+        let currentChapter = min(totalChapters, max(1, Int(floor(book.currentPosition / chapterLength)) + 1))
+        
+        // Calculate progress within current chapter
+        let chapterStartTime = Double(currentChapter - 1) * chapterLength
+        let chapterProgress = min(1.0, max(0.0, (book.currentPosition - chapterStartTime) / chapterLength))
+        
+        // Overall chapter progress (which chapter we're on out of total)
+        let overallProgress = Double(currentChapter - 1) / Double(totalChapters) + (chapterProgress / Double(totalChapters))
+        
+        return (currentChapter, totalChapters, overallProgress)
+    }
     
     var body: some View {
         HStack(spacing: 16) {
@@ -180,7 +236,7 @@ struct BookRow: View {
             .frame(width: 60, height: 60)
             .cornerRadius(8)
             
-            // Book Info
+            // Title and Author
             VStack(alignment: .leading, spacing: 4) {
                 Text(book.title)
                     .font(.headline)
@@ -193,35 +249,41 @@ struct BookRow: View {
                         .foregroundColor(.secondary)
                         .lineLimit(1)
                 }
-                
-                HStack(spacing: 8) {
-                    if book.isDownloaded {
-                        Label("Downloaded", systemImage: "arrow.down.circle.fill")
-                            .font(.caption)
-                            .foregroundColor(.green)
-                    } else {
-                        Label("Cloud", systemImage: "icloud")
-                            .font(.caption)
-                            .foregroundColor(.blue)
-                    }
-                    
-                    Text(formatDuration(book.duration))
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
             }
             
             Spacer()
             
-            // Progress Indicator
-            if book.currentPosition > 0 {
-                VStack {
-                    ProgressView(value: book.currentPosition, total: max(book.duration, 1))
-                        .frame(width: 40)
+            // Progress section - Split into Left and Right
+            HStack(alignment: .center, spacing: 12) {
+                // Left: Status badge
+                statusBadge(for: book)
+                
+                // Right: Chapter progress (two lines)
+                if book.duration > 0 {
+                    let chapterInfo = calculateChapterProgress()
                     
-                    Text(formatTime(book.currentPosition))
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
+                    VStack(alignment: .trailing, spacing: 4) {
+                        // Top: Progress bar
+                        ProgressView(value: chapterInfo.progress, total: 1.0)
+                            .frame(width: 60, height: 4)
+                            .tint(.blue)
+                        
+                        // Bottom: Chapter text
+                        Text("Chapter \(chapterInfo.currentChapter)/\(chapterInfo.totalChapters)")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                            .monospacedDigit()
+                    }
+                } else {
+                    VStack(alignment: .trailing, spacing: 4) {
+                        ProgressView(value: 0, total: 1.0)
+                            .frame(width: 60, height: 4)
+                            .tint(.blue)
+                        
+                        Text("Duration unknown")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                    }
                 }
             }
         }

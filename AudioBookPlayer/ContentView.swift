@@ -38,11 +38,21 @@ struct ContentView: View {
                     .zIndex(1000)
                     .ignoresSafeArea(.all, edges: .all)
             }
+            
+            // Interruption toast notification
+            if audioManager.showInterruptionToast {
+                InterruptionToastView(message: audioManager.interruptionToastMessage)
+                    .zIndex(999)
+                    .ignoresSafeArea(.all, edges: .all)
+            }
         }
         .onChange(of: appState.currentBook?.id) { oldID, newID in
-            // Auto-switch to player only when a NEW book is selected (not when navigating tabs)
-            if newID != nil && newID != oldID && selectedTab != 1 {
-                selectedTab = 1
+            // Auto-switch to player when a book is selected (from library or elsewhere)
+            if newID != nil && newID != oldID {
+                // Use DispatchQueue to ensure the state change happens after the current update cycle
+                DispatchQueue.main.async {
+                    selectedTab = 1
+                }
             }
         }
         .onChange(of: appState.books) { oldValue, newValue in
@@ -54,10 +64,17 @@ struct ContentView: View {
             PersistenceManager.shared.saveCurrentBookID(bookID)
         }
         .onReceive(AudioManager.shared.$currentTime) { time in
-            // Update book position
+            // Update book position in both currentBook and books array
             if var book = appState.currentBook {
                 book.currentPosition = time
                 appState.currentBook = book
+                
+                // Also update the book in the books array so LibraryView shows current progress
+                if let index = appState.books.firstIndex(where: { $0.id == book.id }) {
+                    appState.books[index].currentPosition = time
+                }
+                
+                // Save to persistence (throttled - only save every 5 seconds to avoid excessive writes)
                 PersistenceManager.shared.savePosition(for: book.id, position: time)
             }
         }

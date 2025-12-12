@@ -135,6 +135,7 @@ The app follows a **Model-View-ViewModel (MVVM)** pattern with manager classes h
   - Handles security-scoped resource access
   - Generates simulated chapters if no CUE file exists and simulation is enabled
   - Loads playback speed from settings
+  - Sets up Now Playing info and remote command center
 - `play()`: Starts playback
 - `pause()`: Pauses playback
 - `seek(to time: TimeInterval)`: Seeks to specific time
@@ -145,6 +146,10 @@ The app follows a **Model-View-ViewModel (MVVM)** pattern with manager classes h
 - `startSleepTimer(duration:)`: Starts sleep timer countdown, pauses playback when expired
 - `cancelSleepTimer()`: Cancels active sleep timer
 - `extendSleepTimer(additionalMinutes:)`: Adds time to active timer (default: 10 minutes)
+- `setupInterruptionNotifications()`: Observes AVAudioSession interruptions
+- `handleInterruption(_:)`: Handles audio interruptions (pauses, remembers state, resumes with rewind)
+- `setupRemoteCommandCenter()`: Configures Lock Screen/Control Center controls
+- `updateNowPlayingInfo()`: Updates Now Playing metadata with current playback state
 
 **Internal State**:
 - `player: AVPlayer?` - AVFoundation player instance
@@ -164,11 +169,13 @@ The app follows a **Model-View-ViewModel (MVVM)** pattern with manager classes h
   - `@Published var currentDownloadFile: String`
 
 **Key Methods**:
-- `checkAuthenticationStatus()`: Checks if user is already signed in
+- `checkAuthenticationStatus()`: Checks if user is already signed in, restores from keychain on physical devices
 - `signIn(presentingViewController:)`: Signs in with Google
 - `signOut()`: Signs out
-- `listFiles(in folderID:)`: Lists files in a Google Drive folder
+- `listFiles(in folderID:)`: Lists files in a Google Drive folder (includes shortcut details)
 - `listSharedFolders()`: Lists folders shared with the user
+- `resolveShortcut(shortcutID:)`: Resolves a Google Drive shortcut to its target file/folder
+- `searchFiles(query:)`: Searches for files and folders by name
 - `downloadFile(fileID:fileName:to:)`: Downloads a single file
 - `downloadBookByM4BFile(m4bFileID:folderID:to:)`: Downloads M4B file and related files
 
@@ -246,24 +253,28 @@ The app follows a **Model-View-ViewModel (MVVM)** pattern with manager classes h
   3. SettingsView
 - **Responsibilities**:
   - Observes `AppState` changes
-  - Auto-switches to Player tab when book is selected
+  - Auto-switches to Player tab when book is selected (using DispatchQueue.main.async for reliable switching)
   - Saves books and settings when they change
-  - Updates book position from `AudioManager`
+  - Updates book position in both `currentBook` and `books` array from `AudioManager` for real-time library updates
+  - Displays interruption toast notifications
+  - Manages full-screen sleep timer overlay
 
 #### `LibraryView`
 - **Location**: `AudioBookPlayer/Views/LibraryView.swift`
-- **Purpose**: Displays list of books
+- **Purpose**: Displays list of books with progress tracking
 - **Features**:
   - Empty state when no books
-  - Book list with cover art, title, author
+  - Book list with cover art, title, author, and progress indicators
+  - Real-time progress updates as books are played
   - Swipe-to-delete with confirmation
   - Import button (+)
+  - Auto-plays and switches to Player tab when book is selected
 - **Subviews**:
-  - `BookRow`: Individual book row component
+  - `BookRow`: Individual book row component with status badges and chapter progress
   - `ImportView`: Import interface
 
 **Key Methods**:
-- `selectBook(_ book: Book)`: Selects a book to play
+- `selectBook(_ book: Book)`: Selects a book, loads position, starts playback, and switches to Player tab
 - `deleteBook(_ book: Book)`: Deletes book and all associated files
 - `performBookDeletion(_ book: Book)`: Actually deletes files from disk
 
@@ -314,14 +325,16 @@ The app follows a **Model-View-ViewModel (MVVM)** pattern with manager classes h
 
 #### `GoogleDrivePickerView`
 - **Location**: `AudioBookPlayer/Views/GoogleDrivePickerView.swift`
-- **Purpose**: Google Drive file browser
+- **Purpose**: Google Drive file browser with search and shortcut support
 - **Features**:
   - Authentication interface
-  - Folder navigation
-  - File listing (folders and files)
+  - Hierarchical folder navigation with navigation stack
+  - Shortcut resolution (follows shortcuts to target folders)
+  - Search functionality to find files and folders by name
+  - File listing (folders, files, and shortcuts)
   - M4B file selection
   - Automatic related file discovery
-- **Navigation**: Uses navigation stack to browse folders
+- **Navigation**: Uses navigation stack to browse folders, supports shortcuts and search results
 
 #### `DocumentPicker`
 - **Location**: `AudioBookPlayer/Views/DocumentPicker.swift`
@@ -470,9 +483,28 @@ AudioManager.currentTime updated
 ContentView.onReceive(AudioManager.$currentTime)
     │
     ├─→ Updates AppState.currentBook.currentPosition
+    ├─→ Updates AppState.books[index].currentPosition (for library view)
     └─→ PersistenceManager.savePosition()
     │
     └─→ Saved to UserDefaults
+```
+
+### Book Selection Flow
+
+```
+User taps book in LibraryView
+    │
+    ▼
+LibraryView.selectBook(book)
+    │
+    ├─→ Loads position from PersistenceManager
+    ├─→ Updates AppState.currentBook
+    ├─→ ContentView detects change → switches to Player tab (via DispatchQueue.main.async)
+    ├─→ AudioManager.loadBook(book)
+    └─→ AudioManager.play()
+    │
+    ▼
+Playback starts from saved position
 ```
 
 ## Interaction Diagrams

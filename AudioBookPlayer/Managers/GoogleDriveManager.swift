@@ -34,30 +34,45 @@ class GoogleDriveManager: NSObject, ObservableObject {
     func checkAuthenticationStatus() {
         setupGoogleSignIn()
         
-        // Check if there's a current user
-        if let user = GIDSignIn.sharedInstance.currentUser {
-            // Check if the user has the required scopes
-            let requiredScope = "https://www.googleapis.com/auth/drive.readonly"
-            if let grantedScopes = user.grantedScopes,
-               grantedScopes.contains(requiredScope) {
-                Task { @MainActor in
+        // First, try to restore previous sign-in from keychain (important for physical devices)
+        Task { @MainActor in
+            do {
+                // Restore previous sign-in session from keychain
+                let user = try await GIDSignIn.sharedInstance.restorePreviousSignIn()
+                
+                // Check if the user has the required scopes
+                let requiredScope = "https://www.googleapis.com/auth/drive.readonly"
+                if let grantedScopes = user.grantedScopes,
+                   grantedScopes.contains(requiredScope) {
                     self.currentUser = user
                     self.isAuthenticated = true
                     print("✅ GoogleDrive: Restored authentication from previous session")
-                }
-            } else {
-                // User exists but doesn't have the required scope, need to re-authenticate
-                print("🔍 GoogleDrive: User found but missing required scope, will need to sign in again")
-                Task { @MainActor in
+                } else {
+                    // User exists but doesn't have the required scope, need to re-authenticate
+                    print("🔍 GoogleDrive: User found but missing required scope, will need to sign in again")
                     self.currentUser = nil
                     self.isAuthenticated = false
                 }
-            }
-        } else {
-            Task { @MainActor in
-                self.currentUser = nil
-                self.isAuthenticated = false
-                print("🔍 GoogleDrive: No existing authentication found")
+            } catch {
+                // No previous sign-in found or restore failed
+                // Check if there's a current user as fallback
+                if let user = GIDSignIn.sharedInstance.currentUser {
+                    let requiredScope = "https://www.googleapis.com/auth/drive.readonly"
+                    if let grantedScopes = user.grantedScopes,
+                       grantedScopes.contains(requiredScope) {
+                        self.currentUser = user
+                        self.isAuthenticated = true
+                        print("✅ GoogleDrive: Restored authentication from current user")
+                    } else {
+                        self.currentUser = nil
+                        self.isAuthenticated = false
+                        print("🔍 GoogleDrive: Current user found but missing required scope")
+                    }
+                } else {
+                    self.currentUser = nil
+                    self.isAuthenticated = false
+                    print("🔍 GoogleDrive: No existing authentication found")
+                }
             }
         }
     }
@@ -104,7 +119,7 @@ class GoogleDriveManager: NSObject, ObservableObject {
         // Get access token (will be refreshed automatically if needed)
         let accessToken = user.accessToken.tokenString
         let encodedFolderID = folderID.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? folderID
-        let urlString = "https://www.googleapis.com/drive/v3/files?q='\(encodedFolderID)'+in+parents+and+trashed=false&fields=files(id,name,mimeType,size)"
+        let urlString = "https://www.googleapis.com/drive/v3/files?q='\(encodedFolderID)'+in+parents+and+trashed=false&fields=files(id,name,mimeType,size,shortcutDetails)"
         
         print("🔍 GoogleDrive: Listing files in folder: \(folderID)")
         print("🔍 GoogleDrive: URL: \(urlString)")
@@ -164,7 +179,7 @@ class GoogleDriveManager: NSObject, ObservableObject {
         // Query for folders that are shared with the user
         let query = "sharedWithMe=true and trashed=false and mimeType='application/vnd.google-apps.folder'"
         let encodedQuery = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? query
-        let urlString = "https://www.googleapis.com/drive/v3/files?q=\(encodedQuery)&fields=files(id,name,mimeType,size)"
+        let urlString = "https://www.googleapis.com/drive/v3/files?q=\(encodedQuery)&fields=files(id,name,mimeType,size,shortcutDetails)"
         
         print("🔍 GoogleDrive: Listing shared folders")
         print("🔍 GoogleDrive: URL: \(urlString)")
@@ -479,6 +494,118 @@ class GoogleDriveManager: NSObject, ObservableObject {
         
         return downloadedFiles
     }
+    
+    /// Resolve a shortcut to its target file/folder
+    func resolveShortcut(shortcutID: String) async throws -> GoogleDriveFile {
+        guard let user = currentUser else {
+            throw GoogleDriveError.notAuthenticated
+        }
+        
+        let accessToken = user.accessToken.tokenString
+        let urlString = "https://www.googleapis.com/drive/v3/files/\(shortcutID)?fields=id,name,mimeType,size,shortcutDetails"
+        
+        guard let url = URL(string: urlString) else {
+            throw GoogleDriveError.downloadFailed
+        }
+        
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        request.httpMethod = "GET"
+        
+        let (data, response) = try await URLSession.shared.data(for: request)
+        
+        guard let httpResponse = response as? HTTPURLResponse,
+              httpResponse.statusCode == 200 else {
+            throw GoogleDriveError.downloadFailed
+        }
+        
+        let shortcut = try JSONDecoder().decode(GoogleDriveFile.self, from: data)
+        
+        // Get the target file/folder info
+        guard let targetID = shortcut.shortcutDetails?.targetId else {
+            throw GoogleDriveError.downloadFailed
+        }
+        
+        // Fetch the target file/folder
+        let targetURLString = "https://www.googleapis.com/drive/v3/files/\(targetID)?fields=id,name,mimeType,size,shortcutDetails"
+        
+        guard let targetURL = URL(string: targetURLString) else {
+            throw GoogleDriveError.downloadFailed
+        }
+        
+        var targetRequest = URLRequest(url: targetURL)
+        targetRequest.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        targetRequest.httpMethod = "GET"
+        
+        let (targetData, targetResponse) = try await URLSession.shared.data(for: targetRequest)
+        
+        guard let targetHttpResponse = targetResponse as? HTTPURLResponse,
+              targetHttpResponse.statusCode == 200 else {
+            throw GoogleDriveError.downloadFailed
+        }
+        
+        let target = try JSONDecoder().decode(GoogleDriveFile.self, from: targetData)
+        return target
+    }
+    
+    /// Search for files and folders by name
+    func searchFiles(query: String) async throws -> [GoogleDriveFile] {
+        guard let user = currentUser else {
+            throw GoogleDriveError.notAuthenticated
+        }
+        
+        let accessToken = user.accessToken.tokenString
+        // Search for files/folders that match the query and are not trashed
+        let searchQuery = "name contains '\(query)' and trashed=false"
+        let encodedQuery = searchQuery.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? searchQuery
+        let urlString = "https://www.googleapis.com/drive/v3/files?q=\(encodedQuery)&fields=files(id,name,mimeType,size,shortcutDetails)"
+        
+        print("🔍 GoogleDrive: Searching for: \(query)")
+        print("🔍 GoogleDrive: URL: \(urlString)")
+        
+        guard let url = URL(string: urlString) else {
+            print("❌ GoogleDrive: Invalid URL")
+            throw GoogleDriveError.downloadFailed
+        }
+        
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        request.httpMethod = "GET"
+        
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            
+            guard let httpResponse = response as? HTTPURLResponse else {
+                print("❌ GoogleDrive: Invalid HTTP response")
+                throw GoogleDriveError.downloadFailed
+            }
+            
+            print("🔍 GoogleDrive: HTTP Status: \(httpResponse.statusCode)")
+            
+            guard httpResponse.statusCode == 200 else {
+                // Try to decode error response
+                if let errorData = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                   let error = errorData["error"] as? [String: Any],
+                   let message = error["message"] as? String {
+                    print("❌ GoogleDrive API Error: \(message)")
+                    print("❌ GoogleDrive Error Details: \(error)")
+                } else if let errorString = String(data: data, encoding: .utf8) {
+                    print("❌ GoogleDrive Error Response: \(errorString)")
+                }
+                throw GoogleDriveError.apiError(statusCode: httpResponse.statusCode, message: "HTTP \(httpResponse.statusCode)")
+            }
+            
+            let driveResponse = try JSONDecoder().decode(GoogleDriveFileListResponse.self, from: data)
+            print("✅ GoogleDrive: Found \(driveResponse.files.count) search results")
+            
+            return driveResponse.files
+        } catch let error as GoogleDriveError {
+            throw error
+        } catch {
+            print("❌ GoogleDrive: Unexpected error: \(error.localizedDescription)")
+            throw GoogleDriveError.downloadFailed
+        }
+    }
 }
 
 // MARK: - Models
@@ -488,6 +615,12 @@ struct GoogleDriveFile: Codable {
     let name: String
     let mimeType: String
     let size: String?
+    let shortcutDetails: ShortcutDetails?
+    
+    struct ShortcutDetails: Codable {
+        let targetId: String
+        let targetMimeType: String
+    }
 }
 
 struct GoogleDriveFileListResponse: Codable {
