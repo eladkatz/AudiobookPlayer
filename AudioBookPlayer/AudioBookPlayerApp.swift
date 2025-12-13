@@ -41,7 +41,7 @@ struct AudioBookPlayerApp: App {
             await MainActor.run {
                 var updatedBooks = appState.books
                 var hasChanges = false
-                var currentBookID: UUID? = appState.currentBook?.id
+                let currentBookID: UUID? = appState.currentBook?.id
                 
                 for (index, book) in updatedBooks.enumerated() {
                     if let coverURL = downloadedCovers[book.id] {

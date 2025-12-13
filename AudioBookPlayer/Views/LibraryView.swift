@@ -456,7 +456,7 @@ struct ImportView: View {
         isImporting = true
         
         Task {
-            if var book = await BookFileManager.shared.importBook(from: url) {
+            if let book = await BookFileManager.shared.importBook(from: url) {
                 await MainActor.run {
                     appState.books.append(book)
                     
@@ -484,7 +484,7 @@ struct ImportView: View {
         isImporting = true
         
         Task {
-            if var book = await BookFileManager.shared.importBookFromGoogleDriveM4B(m4bFileID: m4bFileID, folderID: folderID) {
+            if let book = await BookFileManager.shared.importBookFromGoogleDriveM4B(m4bFileID: m4bFileID, folderID: folderID) {
                 await MainActor.run {
                     appState.books.append(book)
                     

@@ -55,7 +55,13 @@ struct PlayerView: View {
             .background(Color(.systemBackground))
         }
         .sheet(isPresented: $showAIMagicControls) {
-            AIMagicControlsView()
+            if #available(iOS 26.0, *) {
+                AIMagicControlsView()
+                    .environmentObject(appState)
+            } else {
+                Text("AI Magic features require iOS 26.0 or later")
+                    .padding()
+            }
         }
         .onChange(of: appState.currentBook?.id) { oldID, newID in
             // Only load book when it actually changes, not on every view appearance
