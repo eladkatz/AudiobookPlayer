@@ -248,7 +248,7 @@ class TranscriptionManager: ObservableObject {
             await analyzer.cancelAndFinishNow()
         }
         
-        // Process results sentence by sentence
+        // Process results sentence by sentence with actual timestamps
         var currentSentence = ""
         var sentenceStartTime: TimeInterval = 0
         var sentenceEndTime: TimeInterval = 0
@@ -258,45 +258,54 @@ class TranscriptionManager: ObservableObject {
                 // Access transcription text - API uses .text property which returns AttributedString
                 let transcription = result.text
                 
-                // Get the plain text string (preserve punctuation)
-                let fullText = String(transcription.characters)
-                
-                // Split text into words (preserve punctuation - don't trim it)
-                let words = fullText.components(separatedBy: CharacterSet.whitespaces)
-                    .filter { !$0.isEmpty }
-                
-                // Process words and build sentences
-                // Note: Without direct segment access, we'll estimate timestamps based on position
-                let totalDuration: TimeInterval = 5 * 60 // 5 minutes
-                let totalWords = words.count
-                
-                for (wordIndex, word) in words.enumerated() {
-                    // Estimate timestamp based on word position
-                    let estimatedTimestamp = (Double(wordIndex) / Double(max(totalWords, 1))) * totalDuration
+                // Iterate through AttributedString runs to extract timestamps
+                for run in transcription.runs {
+                    // Get the text for this run's range
+                    let runRange = run.range
+                    let runText = String(transcription[runRange].characters)
                     
-                    // Update sentence end time
-                    sentenceEndTime = estimatedTimestamp
+                    // Get timestamp from audioTimeRange attribute
+                    var runStartTime: TimeInterval = 0
+                    var runEndTime: TimeInterval = 0
                     
-                    // If this is the first word of a sentence, record start time
-                    if currentSentence.isEmpty {
-                        sentenceStartTime = estimatedTimestamp
+                    // Access audioTimeRange attribute from the run
+                    // The attribute should be available when attributeOptions includes .audioTimeRange
+                    // Try accessing the audioTimeRange attribute directly
+                    if let timeRange = run.attributes.audioTimeRange {
+                        runStartTime = CMTimeGetSeconds(timeRange.start)
+                        runEndTime = runStartTime + CMTimeGetSeconds(timeRange.duration)
                     }
                     
-                    // Add word to current sentence
+                    // If this is the first run of a sentence and we have a timestamp, record start time
+                    if currentSentence.isEmpty && runStartTime > 0 {
+                        sentenceStartTime = runStartTime
+                    }
+                    
+                    // Update sentence end time with each run that has a timestamp
+                    if runEndTime > 0 {
+                        sentenceEndTime = runEndTime
+                    }
+                    
+                    // Add run text to current sentence
                     if currentSentence.isEmpty {
-                        currentSentence = word
+                        currentSentence = runText
                     } else {
-                        currentSentence += " \(word)"
+                        // Add space if needed (runs might already include spaces)
+                        if !runText.isEmpty {
+                            let lastCharIsWhitespace = currentSentence.last?.isWhitespace ?? false
+                            if !lastCharIsWhitespace {
+                                currentSentence += " "
+                            }
+                        }
+                        currentSentence += runText
                     }
                     
                     // Check if sentence is complete (ends with punctuation)
-                    // Check the original word in fullText to see if it has punctuation
-                    let wordWithPunctuation = words[wordIndex]
-                    if wordWithPunctuation.hasSuffix(".") || wordWithPunctuation.hasSuffix("!") || wordWithPunctuation.hasSuffix("?") {
+                    if runText.hasSuffix(".") || runText.hasSuffix("!") || runText.hasSuffix("?") {
                         // Capture values before MainActor closure to avoid Swift 6 concurrency issues
                         let sentenceText = currentSentence
-                        let startTime = sentenceStartTime
-                        let endTime = sentenceEndTime
+                        let startTime = sentenceStartTime > 0 ? sentenceStartTime : 0
+                        let endTime = sentenceEndTime > 0 ? sentenceEndTime : startTime
                         
                         // Sentence complete - add to results
                         await MainActor.run {
@@ -307,7 +316,8 @@ class TranscriptionManager: ObservableObject {
                             )
                             transcribedSentences.append(transcribedSentence)
                             
-                            // Update progress (estimate based on time)
+                            // Update progress based on actual time
+                            let totalDuration: TimeInterval = 5 * 60
                             progress = min(endTime / totalDuration, 1.0)
                         }
                         
@@ -324,7 +334,7 @@ class TranscriptionManager: ObservableObject {
         if !currentSentence.isEmpty {
             // Capture values before MainActor closure
             let sentenceText = currentSentence
-            let startTime = sentenceStartTime
+            let startTime = sentenceStartTime > 0 ? sentenceStartTime : 0
             let endTime = sentenceEndTime > 0 ? sentenceEndTime : (5 * 60)
             
             await MainActor.run {
