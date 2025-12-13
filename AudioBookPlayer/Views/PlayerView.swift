@@ -20,7 +20,7 @@ struct PlayerView: View {
     private var playerContent: some View {
         GeometryReader { geometry in
             ScrollView {
-                VStack(spacing: 0) {
+                VStack(spacing: 24) {
                     // Error Message
                     if let error = audioManager.playbackError {
                         errorSection(error)
@@ -44,12 +44,9 @@ struct PlayerView: View {
                     // Chapter Navigation
                     chapterNavigationSection(availableWidth: geometry.size.width)
                     
-                    // Stop Button
-                    stopButtonSection
-                    
                     // Bottom padding for scroll and tab bar
                     Spacer()
-                        .frame(height: 20)
+                        .frame(height: 24)
                 }
                 .padding(.horizontal, 16)
                 .frame(width: geometry.size.width)
@@ -87,7 +84,7 @@ struct PlayerView: View {
             .cornerRadius(8)
         }
         .padding(.horizontal)
-        .padding(.bottom, 10)
+        .padding(.bottom, 16)
     }
     
     private var emptyPlayerView: some View {
@@ -157,7 +154,6 @@ struct PlayerView: View {
             }
         }
         .padding(.top, 20)
-        .padding(.bottom, 30)
         .onChange(of: appState.currentBook?.coverImageURL) { oldURL, newURL in
             // Force view refresh when coverImageURL changes
             // This ensures the image appears immediately when it's set
@@ -189,7 +185,6 @@ struct PlayerView: View {
                     .padding(.top, 4)
             }
         }
-        .padding(.bottom, 20)
     }
     
     // MARK: - Progress Section
@@ -205,7 +200,6 @@ struct PlayerView: View {
             .accentColor(.blue)
         }
         .padding(.horizontal)
-        .padding(.bottom, 8)
     }
     
     // MARK: - Time Display Section
@@ -222,7 +216,6 @@ struct PlayerView: View {
                 .foregroundColor(.secondary)
         }
         .padding(.horizontal)
-        .padding(.bottom, 20)
     }
     
     // MARK: - Control Buttons Section
@@ -285,7 +278,6 @@ struct PlayerView: View {
                     .disabled(audioManager.chapters.isEmpty)
                 }
                 .padding(.horizontal)
-                .padding(.bottom, 30)
             )
         } else {
             // iPad: Single row with all controls
@@ -353,7 +345,6 @@ struct PlayerView: View {
                     sleepTimerButton
                 }
                 .padding(.horizontal)
-                .padding(.bottom, 30)
             )
         }
     }
@@ -466,28 +457,8 @@ struct PlayerView: View {
                     }
                     .padding(.horizontal)
                 }
-                .frame(maxHeight: 200)
             }
         }
-    }
-    
-    // MARK: - Stop Button Section
-    private var stopButtonSection: some View {
-        Button(action: {
-            audioManager.stop()
-        }) {
-            HStack {
-                Image(systemName: "stop.fill")
-                Text("Stop")
-            }
-            .font(.subheadline)
-            .foregroundColor(.red)
-            .padding(.horizontal, 20)
-            .padding(.vertical, 10)
-            .background(Color(.systemGray6))
-            .cornerRadius(8)
-        }
-        .padding(.top, 20)
     }
     
     // MARK: - Helper Methods
