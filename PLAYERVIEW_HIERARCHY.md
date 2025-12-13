@@ -27,14 +27,14 @@ PlayerView
     │               │   ├── Current Time
     │               │   └── Total Duration
     │               │
-    │               ├── controlButtonsSection
-    │               │   ├── iPhone: 5 buttons (prev, skip back, play/pause, skip forward, next)
-    │               │   └── iPad: 7 buttons (+ speed, + sleep timer)
-    │               │
-    │               ├── chapterNavigationSection
-    │               │   ├── Header Row
-    │               │   │   ├── "Chapters" label
-    │               │   │   └── Speed & Sleep Timer buttons (iPhone only)
+            │               ├── controlButtonsSection
+            │               │   ├── iPhone: 5 buttons (prev, skip back, play/pause, skip forward, next)
+            │               │   └── iPad: 8 buttons (+ speed, + AI Magic, + sleep timer)
+            │               │
+            │               ├── chapterNavigationSection
+            │               │   ├── Header Row
+            │               │   │   ├── "Chapters" label
+            │               │   │   └── Speed, Sleep Timer & AI Magic buttons (iPhone only)
     │               │   └── ⚠️ NESTED ScrollView ← POTENTIAL ISSUE
     │               │       └── Chapter List (maxHeight: 200)
     │               │           └── Each chapter shows:
@@ -110,7 +110,7 @@ PlayerView
 **Location:** `chapterNavigationSection` header (lines 422-426)
 
 **Problem:**
-- On iPhone, Speed and Sleep Timer buttons appear in TWO places:
+- On iPhone, Speed, Sleep Timer, and AI Magic buttons appear in TWO places:
   1. In `chapterNavigationSection` header (when compact)
   2. Not in `controlButtonsSection` (iPhone layout)
 
@@ -119,7 +119,18 @@ PlayerView
 - Less intuitive placement
 - Users might not discover these features
 
-**Recommendation:** Consider moving Speed and Sleep Timer to the main control buttons section for iPhone, or keep them in chapters header but ensure they're discoverable
+**Recommendation:** Consider moving Speed, Sleep Timer, and AI Magic to the main control buttons section for iPhone, or keep them in chapters header but ensure they're discoverable
+
+---
+
+### 5. **NEW FEATURE: AI Magic Controls** ✨
+**Location:** `chapterNavigationSection` header (iPhone) & `controlButtonsSection` (iPad)
+
+**Implementation:**
+- Added sparkles emoji (✨) button for AI Magic controls
+- Opens `AIMagicControlsView` sheet (placeholder for future AI features and transcription)
+- Button appears in both iPhone (compact) and iPad (landscape) layouts
+- Positioned next to Speed and Sleep Timer buttons for consistency
 
 ---
 
@@ -143,9 +154,14 @@ PlayerView
 - Use consistent padding: 16 horizontal, 12-16 vertical between sections
 
 ### Priority 4: Reconsider Button Placement
-**Action:** Evaluate if Speed/Sleep Timer should be in main controls for iPhone
+**Action:** Evaluate if Speed/Sleep Timer/AI Magic should be in main controls for iPhone
 - Could add them as smaller buttons in the control row
 - Or keep in chapters header but make it more obvious
+
+### Priority 5: Implement AI Magic Features
+**Action:** Build out `AIMagicControlsView` with AI magic controls and transcription features
+- Currently a placeholder view
+- Will be used for AI-powered features and audio transcription
 
 ---
 
@@ -164,9 +180,9 @@ PlayerView
         ├── Progress Slider
         ├── Time Display
         ├── Control Buttons
-        │   └── Consider: Add Speed/Sleep Timer here for iPhone
+        │   └── Consider: Add Speed/Sleep Timer/AI Magic here for iPhone
         └── Chapters Section
-            ├── Header (with Speed/Sleep Timer on iPhone)
+            ├── Header (with Speed/Sleep Timer/AI Magic on iPhone)
             └── Chapter List (no nested ScrollView)
 ```
 

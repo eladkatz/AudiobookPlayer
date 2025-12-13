@@ -6,6 +6,7 @@ struct PlayerView: View {
     @ObservedObject private var coverManager = CoverImageManager.shared
     @State private var showSpeedPicker = false
     @State private var showSleepTimerPicker = false
+    @State private var showAIMagicControls = false
     
     var body: some View {
         Group {
@@ -52,6 +53,9 @@ struct PlayerView: View {
                 .frame(width: geometry.size.width)
             }
             .background(Color(.systemBackground))
+        }
+        .sheet(isPresented: $showAIMagicControls) {
+            AIMagicControlsView()
         }
         .onChange(of: appState.currentBook?.id) { oldID, newID in
             // Only load book when it actually changes, not on every view appearance
@@ -286,6 +290,9 @@ struct PlayerView: View {
                     // Playback Speed Button
                     speedButton
                     
+                    // AI Magic Button
+                    aiMagicButton
+                    
                     Spacer()
                     
                     // Previous Chapter
@@ -399,6 +406,20 @@ struct PlayerView: View {
         }
     }
     
+    private var aiMagicButton: some View {
+        Button(action: {
+            showAIMagicControls = true
+        }) {
+            Text("✨")
+                .font(.system(size: 16, weight: .medium))
+                .foregroundColor(.primary)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(Color(.systemGray6))
+                .cornerRadius(8)
+        }
+    }
+    
     // MARK: - Chapter Navigation Section
     private func chapterNavigationSection(availableWidth: CGFloat) -> some View {
         let isCompact = availableWidth < 600 // iPhone vs iPad threshold
@@ -412,11 +433,12 @@ struct PlayerView: View {
                     
                     Spacer()
                     
-                    // On iPhone, show Speed and Sleep Timer buttons here
+                    // On iPhone, show Speed, Sleep Timer, and AI Magic buttons here
                     if isCompact {
                         HStack(spacing: 8) {
                             speedButton
                             sleepTimerButton
+                            aiMagicButton
                         }
                     }
                 }

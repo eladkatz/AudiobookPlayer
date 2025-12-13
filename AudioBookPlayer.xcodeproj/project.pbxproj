@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		483121932EEDE27A00AC614C /* AIMagicControlsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 483121922EEDE27A00AC614C /* AIMagicControlsView.swift */; };
 		4897A06B2EE902FB0042A919 /* GoogleSignIn in Frameworks */ = {isa = PBXBuildFile; productRef = 4897A06A2EE902FB0042A919 /* GoogleSignIn */; };
 		A1000001 /* AudioBookPlayerApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000 /* AudioBookPlayerApp.swift */; };
 		A1000003 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000002 /* ContentView.swift */; };
@@ -29,6 +30,7 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		483121922EEDE27A00AC614C /* AIMagicControlsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AIMagicControlsView.swift; sourceTree = "<group>"; };
 		A1000000 /* AudioBookPlayerApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioBookPlayerApp.swift; sourceTree = "<group>"; };
 		A1000002 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		A1000004 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
@@ -83,6 +85,7 @@
 		A1000027 /* Views */ = {
 			isa = PBXGroup;
 			children = (
+				483121922EEDE27A00AC614C /* AIMagicControlsView.swift */,
 				A1000013 /* PlayerView.swift */,
 				A1000015 /* LibraryView.swift */,
 				A1000017 /* SettingsView.swift */,
@@ -222,6 +225,7 @@
 				A1000052 /* CoverImageManager.swift in Sources */,
 				A1000054 /* SleepTimerFullScreenView.swift in Sources */,
 				A1000056 /* InterruptionToastView.swift in Sources */,
+				483121932EEDE27A00AC614C /* AIMagicControlsView.swift in Sources */,
 				A1000001 /* AudioBookPlayerApp.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
