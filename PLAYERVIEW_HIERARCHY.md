@@ -193,3 +193,5 @@ PlayerView
 **Most Critical Issue:** The current chapter title in `bookInfoSection` is completely redundant since the chapter list already shows it prominently.
 
 **Secondary Issue:** The nested ScrollView creates potential UX confusion and should be simplified.
+
+

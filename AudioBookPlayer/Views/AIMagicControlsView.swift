@@ -7,6 +7,9 @@ struct AIMagicControlsView: View {
     @ObservedObject private var audioManager = AudioManager.shared
     @StateObject private var transcriptionManager = TranscriptionManager.shared
     @State private var highlightedSentenceID: UUID?
+    @State private var isLoading = false
+    @State private var nextStartTime: TimeInterval = 0
+    @State private var isClearingDatabase = false
     
     var body: some View {
         NavigationView {
@@ -31,12 +34,16 @@ struct AIMagicControlsView: View {
                     Button(action: {
                         guard let book = appState.currentBook else { return }
                         Task {
-                            await transcriptionManager.transcribeFirstFiveMinutes(book: book)
+                            await transcriptionManager.transcribeNextTwoMinutes(book: book)
+                            // Update next start time after transcription
+                            if let book = appState.currentBook {
+                                nextStartTime = await TranscriptionDatabase.shared.getNextTranscriptionStartTime(bookID: book.id)
+                            }
                         }
                     }) {
                         HStack {
                             Image(systemName: "waveform")
-                            Text("Transcribe First 5 Minutes")
+                            Text(buttonText)
                         }
                         .font(.headline)
                         .foregroundColor(.white)
@@ -50,6 +57,35 @@ struct AIMagicControlsView: View {
                         .cornerRadius(12)
                     }
                     .disabled(transcriptionManager.isTranscribing || appState.currentBook == nil)
+                    .padding(.horizontal)
+                    
+                    // Clear Database Button (for debugging)
+                    Button(action: {
+                        guard let book = appState.currentBook else { return }
+                        Task {
+                            isClearingDatabase = true
+                            await TranscriptionDatabase.shared.clearTranscription(bookID: book.id)
+                            nextStartTime = 0
+                            transcriptionManager.transcribedSentences = []
+                            isClearingDatabase = false
+                        }
+                    }) {
+                        HStack {
+                            Image(systemName: "trash")
+                            Text(isClearingDatabase ? "Clearing..." : "Clear Database")
+                        }
+                        .font(.subheadline)
+                        .foregroundColor(.white)
+                        .frame(maxWidth: .infinity)
+                        .padding()
+                        .background(
+                            isClearingDatabase || transcriptionManager.isTranscribing || appState.currentBook == nil
+                                ? Color.gray
+                                : Color.red
+                        )
+                        .cornerRadius(12)
+                    }
+                    .disabled(isClearingDatabase || transcriptionManager.isTranscribing || appState.currentBook == nil)
                     .padding(.horizontal)
                     
                     // Status and Progress
@@ -87,8 +123,20 @@ struct AIMagicControlsView: View {
                         .padding(.horizontal)
                     }
                     
+                    // Loading State
+                    if isLoading {
+                        VStack(spacing: 12) {
+                            ProgressView()
+                                .scaleEffect(1.5)
+                            Text("Loading transcription...")
+                                .font(.subheadline)
+                                .foregroundColor(.secondary)
+                        }
+                        .padding(.vertical, 40)
+                    }
+                    
                     // Transcription Results
-                    if !transcriptionManager.transcribedSentences.isEmpty {
+                    else if !transcriptionManager.transcribedSentences.isEmpty {
                         VStack(alignment: .leading, spacing: 16) {
                             HStack {
                                 Text("Transcription Results")
@@ -149,7 +197,8 @@ struct AIMagicControlsView: View {
                     }
                     
                     // Empty State
-                    if !transcriptionManager.isTranscribing &&
+                    else if !transcriptionManager.isTranscribing &&
+                       !isLoading &&
                        transcriptionManager.transcribedSentences.isEmpty &&
                        transcriptionManager.errorMessage == nil {
                         VStack(spacing: 12) {
@@ -161,7 +210,7 @@ struct AIMagicControlsView: View {
                                 .font(.headline)
                                 .foregroundColor(.secondary)
                             
-                            Text("Tap the button above to transcribe the first 5 minutes of the audiobook")
+                            Text("Tap the button above to transcribe 2-minute segments of the audiobook")
                                 .font(.subheadline)
                                 .foregroundColor(.secondary)
                                 .multilineTextAlignment(.center)
@@ -174,10 +223,41 @@ struct AIMagicControlsView: View {
             }
             .navigationTitle("AI Magic")
             .navigationBarTitleDisplayMode(.inline)
+            .task {
+                // Load existing transcription and determine next start time
+                if let book = appState.currentBook {
+                    print("📱 [AIMagicControlsView] onAppear: Loading sentences for book \(book.id.uuidString)")
+                    isLoading = true
+                    // Load all transcribed sentences
+                    await transcriptionManager.loadSentencesForDisplay(
+                        bookID: book.id,
+                        startTime: 0,
+                        endTime: Double.greatestFiniteMagnitude
+                    )
+                    // Query next start time
+                    nextStartTime = await TranscriptionDatabase.shared.getNextTranscriptionStartTime(bookID: book.id)
+                    print("📱 [AIMagicControlsView] onAppear: Loaded \(transcriptionManager.transcribedSentences.count) sentences, next start: \(nextStartTime)s")
+                    isLoading = false
+                }
+            }
+            .onChange(of: appState.currentBook?.id) { oldID, newID in
+                // Reload when book changes
+                if let bookID = newID {
+                    Task {
+                        isLoading = true
+                        await transcriptionManager.loadSentencesForDisplay(
+                            bookID: bookID,
+                            startTime: 0,
+                            endTime: Double.greatestFiniteMagnitude
+                        )
+                        nextStartTime = await TranscriptionDatabase.shared.getNextTranscriptionStartTime(bookID: bookID)
+                        isLoading = false
+                    }
+                }
+            }
             .onChange(of: audioManager.currentTime) { oldTime, newTime in
-                // Only sync if playing and within first 5 minutes
+                // Sync highlighting for all transcribed sentences (no time limit)
                 guard audioManager.isPlaying,
-                      newTime <= 5 * 60, // First 5 minutes only
                       !transcriptionManager.transcribedSentences.isEmpty else {
                     highlightedSentenceID = nil
                     return
@@ -190,7 +270,6 @@ struct AIMagicControlsView: View {
                     highlightedSentenceID = currentSentence.id
                 } else {
                     // If no exact match, find the closest sentence
-                    // (in case timestamps don't perfectly align)
                     if let closestSentence = transcriptionManager.transcribedSentences.min(by: { sentence1, sentence2 in
                         let diff1 = abs(sentence1.startTime - newTime)
                         let diff2 = abs(sentence2.startTime - newTime)
@@ -225,4 +304,14 @@ struct AIMagicControlsView: View {
             }
         }
     }
+    
+    private var buttonText: String {
+        let startMinutes = Int(nextStartTime) / 60
+        let startSeconds = Int(nextStartTime) % 60
+        let endMinutes = (Int(nextStartTime) + 120) / 60
+        let endSeconds = (Int(nextStartTime) + 120) % 60
+        return "Transcribe 2 Minutes (\(startMinutes):\(String(format: "%02d", startSeconds))-\(endMinutes):\(String(format: "%02d", endSeconds)))"
+    }
 }
+
+

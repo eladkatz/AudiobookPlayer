@@ -209,3 +209,34 @@ class AppState: ObservableObject {
     }
 }
 
+// MARK: - Transcription Chunk Model
+
+@available(iOS 26.0, *)
+struct TranscriptionChunk: Codable, Identifiable {
+    let id: UUID
+    let bookID: UUID
+    let startTime: TimeInterval
+    let endTime: TimeInterval
+    let sentences: [TranscribedSentence]
+    let transcribedAt: Date
+    let isComplete: Bool
+    
+    init(
+        id: UUID = UUID(),
+        bookID: UUID,
+        startTime: TimeInterval,
+        endTime: TimeInterval,
+        sentences: [TranscribedSentence],
+        transcribedAt: Date = Date(),
+        isComplete: Bool = true
+    ) {
+        self.id = id
+        self.bookID = bookID
+        self.startTime = startTime
+        self.endTime = endTime
+        self.sentences = sentences
+        self.transcribedAt = transcribedAt
+        self.isComplete = isComplete
+    }
+}
+
