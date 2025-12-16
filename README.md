@@ -22,10 +22,17 @@ A modern iOS audiobook player app built with SwiftUI, featuring local file impor
 - 📱 **Now Playing Integration**: Lock screen and Control Center controls with chapter navigation and speed control
 - ⚙️ **Customizable Settings**: Adjust skip intervals, chapter simulation, interruption handling, and more
 - 💾 **Persistent Storage**: All data is saved locally and persists between app launches
+- ✨ **AI Magic Transcription** (iOS 26+): Automatic audiobook transcription with real-time captions synchronized with playback
+  - Zero-wait captioning: Transcription starts automatically when books are imported
+  - Background processing: Transcriptions happen automatically without user intervention
+  - Real-time synchronization: Captions highlight and scroll automatically as you listen
+  - Smart buffering: Automatically transcribes ahead of playback position
+  - Seek support: Automatically transcribes missing segments when seeking
 
 ## Requirements
 
-- iOS 17.0+
+- iOS 17.0+ (base app)
+- iOS 26.0+ (for AI Magic Transcription feature)
 - Xcode 15.0+
 - Swift 5.9+
 - Apple Developer Account (for device deployment)
@@ -74,14 +81,18 @@ AudioBookPlayer/
 │   │   ├── FileManager.swift       # File import and management
 │   │   ├── GoogleDriveManager.swift # Google Drive integration
 │   │   ├── CoverImageManager.swift  # Automatic cover image search and download
-│   │   └── PersistenceManager.swift # Data persistence
+│   │   ├── PersistenceManager.swift # Data persistence
+│   │   ├── TranscriptionDatabase.swift # SQLite database for transcription storage
+│   │   ├── TranscriptionManager.swift # Transcription orchestration (iOS 26+)
+│   │   └── TranscriptionQueue.swift # Background transcription task queue (iOS 26+)
 │   ├── Views/
 │   │   ├── LibraryView.swift       # Book library
 │   │   ├── PlayerView.swift        # Audio player interface
 │   │   ├── SettingsView.swift      # App settings
 │   │   ├── DocumentPicker.swift    # Local file picker
 │   │   ├── GoogleDrivePickerView.swift # Google Drive file browser
-│   │   └── SleepTimerFullScreenView.swift # Full-screen sleep timer
+│   │   ├── SleepTimerFullScreenView.swift # Full-screen sleep timer
+│   │   └── AIMagicControlsView.swift # AI Magic transcription view (iOS 26+)
 │   └── Assets.xcassets/            # App icons and images
 └── Documentation/
     ├── README.md                   # This file
@@ -95,10 +106,12 @@ AudioBookPlayer/
 
 The app follows a **Model-View-ViewModel (MVVM)** architecture pattern with managers for business logic:
 
-- **Models**: Data structures (`Book`, `Chapter`, `PlaybackSettings`, `AppState`)
+- **Models**: Data structures (`Book`, `Chapter`, `PlaybackSettings`, `AppState`, `TranscribedSentence`, `TranscriptionChunk`)
 - **Views**: SwiftUI views that display the UI
 - **Managers**: Business logic and state management (singletons)
-- **Persistence**: UserDefaults for data storage
+- **Persistence**: 
+  - UserDefaults for app configuration data
+  - SQLite database (via GRDB.swift) for transcription data
 
 For detailed architecture documentation, see [ARCHITECTURE.md](ARCHITECTURE.md).
 
@@ -148,6 +161,32 @@ Handles data persistence:
 - Playback position tracking
 - Settings persistence
 - Current book tracking
+
+### TranscriptionDatabase (iOS 26+)
+Manages SQLite database for transcription storage:
+- Thread-safe database operations via GRDB.swift
+- Efficient batch inserts for transcription chunks
+- Windowed loading for display (loads only visible sentences)
+- Optimized queries with indexes on `(book_id, start_time)`
+- Timestamp rounding to 0.1s precision
+
+### TranscriptionManager (iOS 26+)
+Orchestrates transcription workflow:
+- Uses iOS 26 Speech Framework (`SpeechAnalyzer` + `SpeechTranscriber`)
+- Extracts 2-minute audio segments from books
+- Performs speech-to-text transcription with automatic punctuation
+- Extracts sentences with timestamps from transcription results
+- Batch inserts transcribed data into SQLite database
+- Windowed sentence loading for efficient display
+
+### TranscriptionQueue (iOS 26+)
+Manages background transcription task queue:
+- Priority-based task queue (low, medium, high)
+- Maximum 5 concurrent transcription tasks
+- Automatic gap detection on app launch
+- Power-aware processing (checks battery level/charging status)
+- Smart buffering: Automatically transcribes when buffer is low
+- Seek support: Automatically transcribes missing segments on seek
 
 ## Google Drive Integration
 
@@ -265,6 +304,11 @@ This project is open source. See LICENSE file for details.
 - [ ] Widget support
 - [ ] CarPlay integration
 - [ ] Background audio controls
+- [ ] "What did I miss?" AI-powered summary feature
+- [ ] Multi-language transcription support (currently English only)
+- [ ] Export transcription as SRT or text file
+- [ ] Search within transcribed text
+- [ ] Captions displayed directly on playback screen (not just AI Magic view)
 
 ## Support
 

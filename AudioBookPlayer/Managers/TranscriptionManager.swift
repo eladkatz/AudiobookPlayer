@@ -26,105 +26,9 @@ class TranscriptionManager: ObservableObject {
     // MARK: - Main Transcription Method
     
     func transcribeNextTwoMinutes(book: Book) async {
-        await MainActor.run {
-            isTranscribing = true
-            progress = 0.0
-            errorMessage = nil
-            currentStatus = "Preparing transcription..."
-        }
-        
-        defer {
-            Task { @MainActor in
-                isTranscribing = false
-                cleanup()
-            }
-        }
-        
-        do {
-            // Step 1: Query database for next start time
-            await MainActor.run {
-                currentStatus = "Determining next segment..."
-            }
-            let segmentStartTime = await database.getNextTranscriptionStartTime(bookID: book.id)
-            let segmentDuration: TimeInterval = 2 * 60 // 2 minutes
-            let segmentEndTime = segmentStartTime + segmentDuration
-            
-            let startTimeFormatted = formatTime(segmentStartTime)
-            let endTimeFormatted = formatTime(segmentEndTime)
-            
-            await MainActor.run {
-                currentStatus = "Transcribing \(startTimeFormatted)-\(endTimeFormatted)..."
-            }
-            debugLog("🎯 Starting transcription: \(startTimeFormatted) - \(endTimeFormatted)")
-            
-            // Step 2: Get actual file URL (handle security-scoped access)
-            let actualURL = try await getActualFileURL(for: book)
-            
-            // Step 3: Check and download English language model if needed
-            await MainActor.run {
-                currentStatus = "Checking language model..."
-            }
-            try await ensureEnglishModelInstalled()
-            
-            // Step 4: Extract audio segment to temporary file
-            await MainActor.run {
-                currentStatus = "Extracting audio segment (\(startTimeFormatted)-\(endTimeFormatted))..."
-            }
-            let tempFile = try await extractAudioSegment(from: actualURL, startTime: segmentStartTime, duration: segmentDuration)
-            tempFileURL = tempFile
-            
-            // Step 5: Perform transcription
-            await MainActor.run {
-                currentStatus = "Transcribing audio..."
-                currentBookID = book.id
-            }
-            var sentences = try await performTranscription(audioFileURL: tempFile)
-            
-            // Step 6: Apply timestamp offset (transcription returns timestamps relative to extracted segment)
-            debugLog("🕐 Applying timestamp offset: adding \(segmentStartTime)s to all sentences")
-            let offsetSentences = sentences.map { sentence in
-                TranscribedSentence(
-                    id: sentence.id,
-                    text: sentence.text,
-                    startTime: sentence.startTime + segmentStartTime,
-                    endTime: sentence.endTime + segmentStartTime
-                )
-            }
-            sentences = offsetSentences
-            debugLog("✅ Timestamp offset applied: first sentence now starts at \(sentences.first?.startTime ?? 0)s")
-            
-            // Step 7: Save to database
-            await MainActor.run {
-                currentStatus = "Inserting to database..."
-            }
-            let chunk = TranscriptionChunk(
-                bookID: book.id,
-                startTime: segmentStartTime,
-                endTime: segmentEndTime,
-                sentences: sentences,
-                transcribedAt: Date(),
-                isComplete: true
-            )
-            try await database.insertChunk(chunk)
-            
-            // Step 8: Load all sentences for display
-            await MainActor.run {
-                currentStatus = "Loading transcription..."
-            }
-            // Load all transcribed sentences (no time limit)
-            await loadSentencesForDisplay(bookID: book.id, startTime: 0, endTime: Double.greatestFiniteMagnitude)
-            
-            await MainActor.run {
-                currentStatus = "Transcription complete!"
-                progress = 1.0
-            }
-            
-        } catch {
-            await MainActor.run {
-                errorMessage = error.localizedDescription
-                currentStatus = "Error: \(error.localizedDescription)"
-            }
-        }
+        // Phase 1: Refactored to call transcribeChunk
+        let segmentStartTime = await database.getNextTranscriptionStartTime(bookID: book.id)
+        await transcribeChunk(book: book, startTime: segmentStartTime)
     }
     
     private func formatTime(_ time: TimeInterval) -> String {
@@ -610,6 +514,134 @@ class TranscriptionManager: ObservableObject {
         return await database.getTranscriptionProgress(bookID: bookID)
     }
     
+
+    
+    // MARK: - Phase 1: Refactored Transcription Method
+    
+    func transcribeChunk(book: Book, startTime: TimeInterval) async {
+        await MainActor.run {
+            isTranscribing = true
+            progress = 0.0
+            errorMessage = nil
+            currentStatus = "Preparing transcription..."
+        }
+        
+        defer {
+            Task { @MainActor in
+                isTranscribing = false
+                cleanup()
+            }
+        }
+        
+        do {
+            let segmentStartTime = startTime
+            let segmentDuration: TimeInterval = 2 * 60 // 2 minutes
+            let segmentEndTime = segmentStartTime + segmentDuration
+            
+            let startTimeFormatted = formatTime(segmentStartTime)
+            let endTimeFormatted = formatTime(segmentEndTime)
+            
+            await MainActor.run {
+                currentStatus = "Transcribing \(startTimeFormatted)-\(endTimeFormatted)..."
+            }
+            debugLog("🎯 Starting transcription chunk: \(startTimeFormatted) - \(endTimeFormatted)")
+            
+            // Get actual file URL
+            let actualURL = try await getActualFileURL(for: book)
+            
+            // Check and download English language model if needed
+            await MainActor.run {
+                currentStatus = "Checking language model..."
+            }
+            try await ensureEnglishModelInstalled()
+            
+            // Extract audio segment
+            await MainActor.run {
+                currentStatus = "Extracting audio segment (\(startTimeFormatted)-\(endTimeFormatted))..."
+            }
+            let tempFile = try await extractAudioSegment(from: actualURL, startTime: segmentStartTime, duration: segmentDuration)
+            tempFileURL = tempFile
+            
+            // Perform transcription
+            await MainActor.run {
+                currentStatus = "Transcribing audio..."
+                currentBookID = book.id
+            }
+            var sentences = try await performTranscription(audioFileURL: tempFile)
+            
+            // Apply timestamp offset
+            debugLog("🕐 Applying timestamp offset: adding \(segmentStartTime)s to all sentences")
+            let offsetSentences = sentences.map { sentence in
+                TranscribedSentence(
+                    id: sentence.id,
+                    text: sentence.text,
+                    startTime: sentence.startTime + segmentStartTime,
+                    endTime: sentence.endTime + segmentStartTime
+                )
+            }
+            sentences = offsetSentences
+            
+            // Save to database
+            await MainActor.run {
+                currentStatus = "Inserting to database..."
+            }
+            let chunk = TranscriptionChunk(
+                bookID: book.id,
+                startTime: segmentStartTime,
+                endTime: segmentEndTime,
+                sentences: sentences,
+                transcribedAt: Date(),
+                isComplete: true
+            )
+            try await database.insertChunk(chunk)
+            
+            await MainActor.run {
+                currentStatus = "Transcription complete!"
+                progress = 1.0
+            }
+            
+        } catch {
+            await MainActor.run {
+                errorMessage = error.localizedDescription
+                currentStatus = "Error: \(error.localizedDescription)"
+            }
+        }
+    }
+    
+    // MARK: - Phase 4: Compatibility Check
+    
+    @available(iOS 26.0, *)
+    func isTranscriptionAvailable() async -> Bool {
+        // Check if SpeechTranscriber is available
+        guard SpeechTranscriber.isAvailable else {
+            return false
+        }
+        
+        // Check if English locale is supported
+        let supportedLocales = await SpeechTranscriber.supportedLocales
+        let localeIdentifiers = supportedLocales.map { $0.identifier(.bcp47) }
+        guard localeIdentifiers.contains("en-US") else {
+            return false
+        }
+        
+        return true
+    }
+    
+    // MARK: - Phase 5: Seeking Support
+    
+    func checkIfTranscriptionNeededAtSeekPosition(bookID: UUID, seekTime: TimeInterval, chunkSize: TimeInterval) async -> TimeInterval? {
+        let progress = await database.getTranscriptionProgress(bookID: bookID)
+        let threshold = chunkSize / 2.0
+        
+        if progress < seekTime + threshold {
+            // Calculate chunk boundary
+            let chunkStartTime = floor(seekTime / chunkSize) * chunkSize
+            return chunkStartTime
+        }
+        
+        return nil
+    }
+
     // MARK: - Debug Logging
     
     private func debugLog(_ message: String) {

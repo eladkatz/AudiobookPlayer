@@ -65,6 +65,19 @@ struct AudioBookPlayerApp: App {
                 }
             }
         }
+        
+        // Phase 4: Detect transcription gaps on app launch
+        if #available(iOS 26.0, *) {
+            Task.detached(priority: .background) {
+                // Capture MainActor values before entering detached context
+                let books = await MainActor.run { appState.books }
+                let currentBookID = await MainActor.run { appState.currentBook?.id }
+                await TranscriptionQueue.shared.detectTranscriptionGaps(
+                    books: books,
+                    currentBookID: currentBookID
+                )
+            }
+        }
     }
 }
 

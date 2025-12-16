@@ -471,6 +471,13 @@ struct ImportView: View {
                     isImporting = false
                     dismiss()
                 }
+                
+                // Phase 1: Auto-transcribe first 2 minutes after import
+                if #available(iOS 26.0, *) {
+                    Task.detached(priority: .background) {
+                        await TranscriptionManager.shared.transcribeChunk(book: book, startTime: 0.0)
+                    }
+                }
             } else {
                 await MainActor.run {
                     isImporting = false
@@ -498,6 +505,13 @@ struct ImportView: View {
                     PersistenceManager.shared.saveBooks(appState.books)
                     isImporting = false
                     dismiss()
+                }
+                
+                // Phase 1: Auto-transcribe first 2 minutes after import
+                if #available(iOS 26.0, *) {
+                    Task.detached(priority: .background) {
+                        await TranscriptionManager.shared.transcribeChunk(book: book, startTime: 0.0)
+                    }
                 }
             } else {
                 await MainActor.run {

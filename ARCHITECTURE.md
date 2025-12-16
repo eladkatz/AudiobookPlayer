@@ -87,6 +87,34 @@ The app follows a **Model-View-ViewModel (MVVM)** pattern with manager classes h
   - `duration: TimeInterval`
   - `endTime: TimeInterval` (computed)
 
+#### `TranscribedSentence`
+- **Location**: `AudioBookPlayer/Models/Models.swift`
+- **Purpose**: Represents a single transcribed sentence with timestamps
+- **Availability**: iOS 26.0+ only
+- **Properties**:
+  - `id: UUID`: Unique sentence identifier
+  - `bookID: UUID`: Associated book identifier
+  - `text: String`: Transcribed sentence text
+  - `startTime: TimeInterval`: Absolute start time in book (seconds, rounded to 0.1s)
+  - `endTime: TimeInterval`: Absolute end time in book (seconds, rounded to 0.1s)
+  - `chunkID: UUID`: Parent transcription chunk identifier
+  - `createdAt: Date`: Timestamp when sentence was created
+- **Computed Properties**:
+  - `srtTimeString: String`: SRT-formatted timestamp string (for display, though not currently shown in UI)
+
+#### `TranscriptionChunk`
+- **Location**: `AudioBookPlayer/Models/Models.swift`
+- **Purpose**: Represents metadata for a transcription chunk (typically 2-minute segment)
+- **Availability**: iOS 26.0+ only
+- **Properties**:
+  - `id: UUID`: Unique chunk identifier
+  - `bookID: UUID`: Associated book identifier
+  - `startTime: TimeInterval`: Chunk start time (seconds, rounded to 0.1s)
+  - `endTime: TimeInterval`: Chunk end time (seconds, rounded to 0.1s)
+  - `createdAt: Date`: Timestamp when chunk was created
+  - `isComplete: Bool`: Whether chunk transcription is complete
+
+
 #### `PlaybackSettings`
 - **Location**: `AudioBookPlayer/Models/Models.swift`
 - **Purpose**: User playback preferences
@@ -242,6 +270,103 @@ The app follows a **Model-View-ViewModel (MVVM)** pattern with manager classes h
   - `savePosition(for bookID: UUID, position: TimeInterval)`: Saves playback position
   - `loadPosition(for bookID: UUID) -> TimeInterval`: Loads playback position
 
+#### `TranscriptionDatabase`
+- **Location**: `AudioBookPlayer/Managers/TranscriptionDatabase.swift`
+- **Type**: Singleton
+- **Purpose**: Manages SQLite database for persistent transcription storage
+- **Technology**: GRDB.swift wrapper for SQLite
+- **Key Properties**:
+  - `static let shared = TranscriptionDatabase()`: Singleton instance
+  - `private let dbQueue: DatabaseQueue`: Thread-safe database queue
+
+**Key Methods**:
+- `init()`: Initializes database, creates tables and indexes if needed
+- `loadSentences(bookID:startTime:endTime:) async -> [TranscribedSentence]`: Loads sentences in time range (windowed loading)
+- `findSentence(bookID:atTime:) async -> TranscribedSentence?`: Finds sentence at specific playback time
+- `insertChunk(_ chunk: TranscriptionChunk) async throws`: Inserts transcription chunk with all sentences (batch insert)
+- `getTranscriptionProgress(bookID:) async -> TimeInterval`: Gets latest transcribed time for a book
+- `getNextTranscriptionStartTime(bookID:) async -> TimeInterval`: Gets next chunk start time for incremental transcription
+- `getChunkCount(bookID:) async -> Int`: Gets number of transcribed chunks for a book
+- `clearTranscription(bookID:) async throws`: Deletes all transcription data for a book
+
+**Database Schema**:
+- `sentences` table: Individual transcribed sentences with absolute timestamps
+- `chunks` table: Metadata for transcription chunks (2-minute segments)
+- Indexes on `(book_id, start_time)` for efficient time-range queries
+
+**Thread Safety**: Uses GRDB's `DatabaseQueue` for thread-safe concurrent reads and serialized writes
+
+#### `TranscriptionManager`
+- **Location**: `AudioBookPlayer/Managers/TranscriptionManager.swift`
+- **Type**: Singleton (`ObservableObject`)
+- **Purpose**: Orchestrates transcription workflow using iOS 26 Speech Framework
+- **Key Properties**:
+  - `@Published var isTranscribing: Bool`: Whether transcription is in progress
+  - `@Published var progress: Double`: Transcription progress (0.0 to 1.0)
+  - `@Published var transcribedSentences: [TranscribedSentence]`: Currently loaded sentences for display
+  - `@Published var errorMessage: String?`: Error message if transcription fails
+  - `@Published var currentStatus: String`: Current transcription status message
+
+**Key Methods**:
+- `transcribeChunk(book:startTime:) async`: Transcribes a 2-minute chunk starting at specified time
+  - Extracts audio segment from book
+  - Creates `SpeechTranscriber` with English locale
+  - Processes audio through `SpeechAnalyzer`
+  - Extracts sentences with timestamps
+  - Applies timestamp offset and rounds to 0.1s precision
+  - Batch inserts into database
+- `loadSentencesForDisplay(bookID:startTime:endTime:) async`: Loads sentences in time range for display (windowed loading)
+- `isTranscriptionAvailable() async -> Bool`: Checks iOS version, Speech Framework availability, and English locale support
+- `checkIfTranscriptionNeededAtSeekPosition(bookID:seekTime:chunkSize:) async -> TimeInterval?`: Determines if transcription is needed at seek position
+
+**Transcription Process**:
+1. Extract 2-minute audio segment using `AVAssetExportSession`
+2. Create `SpeechTranscriber` with `.general` preset for automatic punctuation
+3. Create `SpeechAnalyzer` with transcriber module
+4. Process audio and extract sentences from `AttributedString.runs` with `audioTimeRange` attribute
+5. Apply timestamp offset (chunk start time)
+6. Round timestamps to 0.1s precision
+7. Batch insert into SQLite database
+
+#### `TranscriptionQueue`
+- **Location**: `AudioBookPlayer/Managers/TranscriptionQueue.swift`
+- **Type**: Singleton (`actor`)
+- **Purpose**: Manages background transcription task queue with priority system
+- **Key Properties**:
+  - `static let shared = TranscriptionQueue()`: Singleton instance
+  - `private var queuedTasks: [TranscriptionTask]`: Priority queue of pending tasks
+  - `private var runningTasks: [UUID: TranscriptionTask]`: Currently executing tasks
+  - `private let maxConcurrentTasks = 5`: Maximum concurrent transcription tasks
+  - `private var processingTask: Task<Void, Never>?`: Background processing task
+
+**Task Priority System**:
+- `.high`: Current book's transcription needs
+- `.medium`: Books in progress with gaps
+- `.low`: Books not yet started
+
+**Key Methods**:
+- `enqueue(_ task: TranscriptionTask)`: Adds task to queue with duplicate prevention
+- `detectTranscriptionGaps(books:currentBookID:) async`: Detects missing transcription chunks for all books
+  - Checks each book for gaps
+  - Queues initial chunk for books without transcription
+  - Queues chunks for books with gaps ahead of playback position
+  - Uses power-aware processing (checks battery level)
+- `shouldProcess() async -> Bool`: Checks if transcription should proceed based on power state
+  - Returns `true` if device is charging or battery > 50%
+  - Uses `MainActor.run` to access `UIDevice` (MainActor-isolated)
+
+**Concurrency Model**:
+- Actor ensures thread-safe task management
+- Maximum 5 concurrent tasks
+- Oldest task cancelled if limit exceeded
+- Tasks not cancelled on seek (allowed to complete)
+
+**Integration Points**:
+- Called from `AudioBookPlayerApp.loadInitialData()` for gap detection on app launch
+- Called from `LibraryView` import hooks for auto-transcription on import
+- Called from `AIMagicControlsView` for buffer monitoring and seek detection
+
+
 ### 4. Views
 
 #### `ContentView`
@@ -295,6 +420,50 @@ The app follows a **Model-View-ViewModel (MVVM)** pattern with manager classes h
   - Observes `AudioManager` for playback state, chapters, speed, and sleep timer
   - Observes `AppState` for current book
   - Observes `CoverImageManager` for cover search progress
+
+#### `AIMagicControlsView`
+- **Location**: `AudioBookPlayer/Views/AIMagicControlsView.swift`
+- **Purpose**: Dedicated view for displaying transcription and AI Magic controls
+- **Availability**: iOS 26.0+ only
+- **Layout**: 80/20 split (transcription content / action button)
+- **Key Features**:
+  - Windowed sentence loading (30s before, 75s after current playback position)
+  - Real-time sentence highlighting synchronized with playback
+  - Auto-scroll to current sentence
+  - Dynamic window updates when playback position changes significantly (>10s)
+  - Status display in navigation bar (emoji + short text when transcribing)
+  - "What did I miss?" button (placeholder for future feature)
+
+**Key Properties**:
+- `@State private var highlightedSentenceID: UUID?`: Currently highlighted sentence
+- `@State private var isLoading: Bool`: Loading state for sentence fetching
+- `@State private var lastPlaybackTime: TimeInterval`: Tracks playback position for seek detection
+- `@State private var seekDebounceTask: Task<Void, Never>?`: Debounce task for seek detection
+- `@State private var bufferCheckTask: Task<Void, Never>?`: Background task for buffer monitoring
+
+**Key Methods**:
+- `loadInitialSentences() async`: Loads windowed sentences on view appear
+- `handleBookChange(newID:) async`: Reloads sentences when book changes
+- `updateHighlight(for:)`: Updates highlighted sentence based on playback time
+- `handleSeek(to:) async`: Detects seek events and triggers transcription if needed
+- `checkBufferAndTranscribeIfNeeded() async`: Monitors buffer and transcribes when low
+- `startBufferMonitoring()`: Starts background task for buffer monitoring
+
+**Transcription Status Display**:
+- Navigation bar shows emoji + short status when `isTranscribing` is true:
+  - ⚙️ Preparing...
+  - 📚 Checking model...
+  - ✂️ Extracting...
+  - 🎤 Transcribing...
+  - 💾 Saving...
+  - ✅ Complete
+
+**Integration Points**:
+- Observes `transcriptionManager.transcribedSentences` for display
+- Observes `audioManager.currentTime` for highlighting and seek detection
+- Observes `audioManager.isPlaying` for highlighting control
+- Calls `TranscriptionQueue` for buffer monitoring and seek-triggered transcription
+
 
 #### `SleepTimerFullScreenView`
 - **Location**: `AudioBookPlayer/Views/SleepTimerFullScreenView.swift`
@@ -609,6 +778,16 @@ AudioBookPlayerApp
 - **MainActor**: Used for UI-related async operations
   - `AudioManager` updates use `@MainActor` or `MainActor.run`
   - `GoogleDriveManager` progress updates use `MainActor.run`
+  - `TranscriptionManager` UI state updates use `MainActor.run`
+  - `TranscriptionQueue.shouldProcess()` uses `MainActor.run` for UIDevice access
+- **Actors**: 
+  - `TranscriptionQueue`: Actor for thread-safe concurrent task management
+  - Uses `Task.detached` for background processing
+  - Ensures thread-safe access to task queue and running tasks
+- **Database Threading**:
+  - `TranscriptionDatabase`: Uses GRDB's `DatabaseQueue` for thread-safe operations
+  - Read operations: Concurrent reads allowed via `dbQueue.read`
+  - Write operations: Serialized writes via `dbQueue.write`
 
 ## Error Handling
 
@@ -619,12 +798,28 @@ AudioBookPlayerApp
 
 ## Persistence Strategy
 
-- **UserDefaults**: Used for all app data
+- **UserDefaults**: Used for app configuration data
   - Books array (JSON encoded)
   - Settings (JSON encoded with backward compatibility)
   - Current book ID
   - Playback positions (per book)
+  - Books array (JSON encoded)
+  - Settings (JSON encoded with backward compatibility)
+  - Current book ID
+  - Playback positions (per book)
+- **SQLite Database**: Used for transcription data
+  - Database file: `Documents/transcription.db`
+  - Managed by GRDB.swift wrapper
+  - Tables: `sentences`, `chunks`
+  - Thread-safe via `DatabaseQueue`
+  - Indexes optimized for time-range queries
+  - See `TRANSCRIPTION_DATABASE.md` for detailed schema
 - **File System**: 
+  - Books stored in `Documents/Books/`
+  - Google Drive books in subdirectories: `Documents/Books/{folderID}/`
+  - Cover images stored in `Documents/Covers/{bookID}.jpg`
+  - Transcription temporary files: System temp directory (cleaned up after use)
+  - Files organized by import source
   - Books stored in `Documents/Books/`
   - Google Drive books in subdirectories: `Documents/Books/{folderID}/`
   - Cover images stored in `Documents/Covers/{bookID}.jpg`
