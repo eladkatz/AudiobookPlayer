@@ -64,6 +64,22 @@ struct AIMagicControlsView: View {
                 handleBookChange(newID: newID)
             }
             .onChange(of: audioManager.currentTime) { oldTime, newTime in
+                let oldHours = Int(oldTime) / 3600
+                let oldMinutes = Int(oldTime) / 60 % 60
+                let oldSeconds = Int(oldTime) % 60
+                let oldTimeFormatted = String(format: "%02d:%02d:%02d", oldHours, oldMinutes, oldSeconds)
+                
+                let newHours = Int(newTime) / 3600
+                let newMinutes = Int(newTime) / 60 % 60
+                let newSeconds = Int(newTime) % 60
+                let newTimeFormatted = String(format: "%02d:%02d:%02d", newHours, newMinutes, newSeconds)
+                
+                // Detect if this is a seek (large jump in time)
+                let timeDiff = abs(newTime - oldTime)
+                if timeDiff > 5.0 {
+                    print("📖 [AIMagicControlsView] Large time change detected (likely seek): \(oldTimeFormatted) (\(oldTime)s) -> \(newTimeFormatted) (\(newTime)s), diff=\(timeDiff)s")
+                }
+                
                 updateHighlight(for: newTime)
             }
             .onChange(of: audioManager.isPlaying) { oldValue, newValue in
@@ -201,11 +217,53 @@ struct AIMagicControlsView: View {
                 let startTime = max(0, centerTime - 30.0)
                 let endTime = centerTime + windowSize
                 
+                let centerHours = Int(centerTime) / 3600
+                let centerMinutes = Int(centerTime) / 60 % 60
+                let centerSeconds = Int(centerTime) % 60
+                let centerTimeFormatted = String(format: "%02d:%02d:%02d", centerHours, centerMinutes, centerSeconds)
+                
+                let startHours = Int(startTime) / 3600
+                let startMinutes = Int(startTime) / 60 % 60
+                let startSeconds = Int(startTime) % 60
+                let startTimeFormatted = String(format: "%02d:%02d:%02d", startHours, startMinutes, startSeconds)
+                
+                let endHours = Int(endTime) / 3600
+                let endMinutes = Int(endTime) / 60 % 60
+                let endSeconds = Int(endTime) % 60
+                let endTimeFormatted = String(format: "%02d:%02d:%02d", endHours, endMinutes, endSeconds)
+                
+                print("📖 [AIMagicControlsView] Loading initial sentences for book '\(book.title)'")
+                print("📖 [AIMagicControlsView] Center time: \(centerTimeFormatted) (\(centerTime)s)")
+                print("📖 [AIMagicControlsView] Requesting time range: \(startTimeFormatted) (\(startTime)s) - \(endTimeFormatted) (\(endTime)s)")
+                
                 await transcriptionManager.loadSentencesForDisplay(
                     bookID: book.id,
                     startTime: startTime,
                     endTime: endTime
                 )
+                
+                print("📖 [AIMagicControlsView] Loaded \(transcriptionManager.transcribedSentences.count) sentences")
+                
+                // If no sentences loaded, try loading from the beginning (fallback for existing transcriptions)
+                if transcriptionManager.transcribedSentences.isEmpty {
+                    print("🔍 [AIMagicControlsView] No sentences in window, trying to load from beginning...")
+                    let progress = await transcriptionManager.getTranscriptionProgress(bookID: book.id)
+                    if progress > 0 {
+                        await transcriptionManager.loadSentencesForDisplay(
+                            bookID: book.id,
+                            startTime: 0,
+                            endTime: progress + 60.0
+                        )
+                        print("📖 [AIMagicControlsView] Fallback load completed, now have \(transcriptionManager.transcribedSentences.count) sentences")
+                    }
+                    
+                    // If still no sentences (or progress is 0), trigger transcription check
+                    // User opened transcription view - if no transcription exists, start it
+                    if transcriptionManager.transcribedSentences.isEmpty {
+                        print("🔍 [AIMagicControlsView] No transcription found, triggering transcription check at current position")
+                        audioManager.checkAndTriggerTranscriptionForSeek(time: centerTime)
+                    }
+                }
                 isLoading = false
             }
         }
@@ -220,11 +278,33 @@ struct AIMagicControlsView: View {
                 let startTime = max(0, centerTime - 30.0)
                 let endTime = centerTime + windowSize
                 
+                let centerHours = Int(centerTime) / 3600
+                let centerMinutes = Int(centerTime) / 60 % 60
+                let centerSeconds = Int(centerTime) % 60
+                let centerTimeFormatted = String(format: "%02d:%02d:%02d", centerHours, centerMinutes, centerSeconds)
+                
+                let startHours = Int(startTime) / 3600
+                let startMinutes = Int(startTime) / 60 % 60
+                let startSeconds = Int(startTime) % 60
+                let startTimeFormatted = String(format: "%02d:%02d:%02d", startHours, startMinutes, startSeconds)
+                
+                let endHours = Int(endTime) / 3600
+                let endMinutes = Int(endTime) / 60 % 60
+                let endSeconds = Int(endTime) % 60
+                let endTimeFormatted = String(format: "%02d:%02d:%02d", endHours, endMinutes, endSeconds)
+                
+                print("📖 [AIMagicControlsView] Book changed, loading sentences for bookID=\(bookID.uuidString)")
+                print("📖 [AIMagicControlsView] Center time: \(centerTimeFormatted) (\(centerTime)s)")
+                print("📖 [AIMagicControlsView] Requesting time range: \(startTimeFormatted) (\(startTime)s) - \(endTimeFormatted) (\(endTime)s)")
+                
                 await transcriptionManager.loadSentencesForDisplay(
                     bookID: bookID,
                     startTime: startTime,
                     endTime: endTime
                 )
+                
+                print("📖 [AIMagicControlsView] Loaded \(transcriptionManager.transcribedSentences.count) sentences after book change")
+                
                 isLoading = false
             }
         }

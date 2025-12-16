@@ -519,6 +519,14 @@ class TranscriptionManager: ObservableObject {
     // MARK: - Phase 1: Refactored Transcription Method
     
     func transcribeChunk(book: Book, startTime: TimeInterval) async {
+        let hours = Int(startTime) / 3600
+        let minutes = Int(startTime) / 60 % 60
+        let seconds = Int(startTime) % 60
+        let startTimeFormatted = String(format: "%02d:%02d:%02d", hours, minutes, seconds)
+        
+        print("🚀 [TranscriptionManager] TRANSCRIPTION TASK STARTED at start time index: \(startTimeFormatted) (\(startTime)s)")
+        print("🚀 [TranscriptionManager] Book: '\(book.title)' (ID: \(book.id.uuidString))")
+        
         await MainActor.run {
             isTranscribing = true
             progress = 0.0
@@ -595,12 +603,34 @@ class TranscriptionManager: ObservableObject {
             )
             try await database.insertChunk(chunk)
             
+            let completionHours = Int(segmentStartTime) / 3600
+            let completionMinutes = Int(segmentStartTime) / 60 % 60
+            let completionSeconds = Int(segmentStartTime) % 60
+            let completionStartTimeFormatted = String(format: "%02d:%02d:%02d", completionHours, completionMinutes, completionSeconds)
+            
+            let completionEndHours = Int(segmentEndTime) / 3600
+            let completionEndMinutes = Int(segmentEndTime) / 60 % 60
+            let completionEndSeconds = Int(segmentEndTime) % 60
+            let completionEndTimeFormatted = String(format: "%02d:%02d:%02d", completionEndHours, completionEndMinutes, completionEndSeconds)
+            
+            print("✅ [TranscriptionManager] TRANSCRIPTION TASK COMPLETED at start time index: \(completionStartTimeFormatted) (\(segmentStartTime)s)")
+            print("✅ [TranscriptionManager] Contained \(sentences.count) sentences")
+            print("✅ [TranscriptionManager] Time range: \(completionStartTimeFormatted) - \(completionEndTimeFormatted) (ending at \(segmentEndTime)s)")
+            
             await MainActor.run {
                 currentStatus = "Transcription complete!"
                 progress = 1.0
             }
             
         } catch {
+            let hours = Int(startTime) / 3600
+            let minutes = Int(startTime) / 60 % 60
+            let seconds = Int(startTime) % 60
+            let startTimeFormatted = String(format: "%02d:%02d:%02d", hours, minutes, seconds)
+            
+            print("❌ [TranscriptionManager] TRANSCRIPTION TASK FAILED at start time index: \(startTimeFormatted) (\(startTime)s)")
+            print("❌ [TranscriptionManager] Error: \(error.localizedDescription)")
+            
             await MainActor.run {
                 errorMessage = error.localizedDescription
                 currentStatus = "Error: \(error.localizedDescription)"
@@ -611,34 +641,71 @@ class TranscriptionManager: ObservableObject {
     // MARK: - Phase 4: Compatibility Check
     
     @available(iOS 26.0, *)
-    func isTranscriptionAvailable() async -> Bool {
-        // Check if SpeechTranscriber is available
-        guard SpeechTranscriber.isAvailable else {
-            return false
+    private static var cachedAvailability: Bool?
+    private static var availabilityCheckTask: Task<Bool, Never>?
+    
+    @available(iOS 26.0, *)
+    func isTranscriberAvailable() async -> Bool {
+        // Return cached result if available
+        if let cached = Self.cachedAvailability {
+            return cached
         }
         
-        // Check if English locale is supported
-        let supportedLocales = await SpeechTranscriber.supportedLocales
-        let localeIdentifiers = supportedLocales.map { $0.identifier(.bcp47) }
-        guard localeIdentifiers.contains("en-US") else {
-            return false
+        // If check is already in progress, wait for it
+        if let existingTask = Self.availabilityCheckTask {
+            return await existingTask.value
         }
         
-        return true
+        // Start new check
+        let task = Task<Bool, Never> {
+            let checkStart = Date()
+            
+            // Check if SpeechTranscriber is available (fast check)
+            guard SpeechTranscriber.isAvailable else {
+                Self.cachedAvailability = false
+                Self.availabilityCheckTask = nil
+                return false
+            }
+            
+            // Check if English locale is supported (SLOW - cache this)
+            let localeCheckStart = Date()
+            let supportedLocales = await SpeechTranscriber.supportedLocales
+            let localeCheckElapsed = Date().timeIntervalSince(localeCheckStart)
+            print("⏱️ [Performance] SpeechTranscriber.supportedLocales call - elapsed: \(String(format: "%.3f", localeCheckElapsed))s")
+            
+            let localeIdentifiers = supportedLocales.map { $0.identifier(.bcp47) }
+            let isAvailable = localeIdentifiers.contains("en-US")
+            
+            let totalElapsed = Date().timeIntervalSince(checkStart)
+            print("⏱️ [Performance] isTranscriberAvailable check - total elapsed: \(String(format: "%.3f", totalElapsed))s")
+            
+            Self.cachedAvailability = isAvailable
+            Self.availabilityCheckTask = nil
+            return isAvailable
+        }
+        
+        Self.availabilityCheckTask = task
+        return await task.value
     }
     
     // MARK: - Phase 5: Seeking Support
     
     func checkIfTranscriptionNeededAtSeekPosition(bookID: UUID, seekTime: TimeInterval, chunkSize: TimeInterval) async -> TimeInterval? {
+        print("🔍 [TranscriptionManager] checkIfTranscriptionNeededAtSeekPosition called: bookID=\(bookID.uuidString), seekTime=\(seekTime)s, chunkSize=\(chunkSize)s")
+        
         let progress = await database.getTranscriptionProgress(bookID: bookID)
         let threshold = chunkSize / 2.0
+        
+        print("🔍 [TranscriptionManager] Current progress=\(progress)s, seekTime=\(seekTime)s, threshold=\(threshold)s, required=\(seekTime + threshold)s")
         
         if progress < seekTime + threshold {
             // Calculate chunk boundary
             let chunkStartTime = floor(seekTime / chunkSize) * chunkSize
+            print("✅ [TranscriptionManager] Transcription IS NEEDED, chunkStartTime=\(chunkStartTime)s")
             return chunkStartTime
         }
         
+        print("ℹ️ [TranscriptionManager] Transcription NOT NEEDED, progress (\(progress)s) already covers seekTime (\(seekTime)s)")
         return nil
     }
 

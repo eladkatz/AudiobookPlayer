@@ -385,6 +385,8 @@ class AudioManager: NSObject, ObservableObject {
     
     // MARK: - Load Book
     func loadBook(_ book: Book) {
+        let loadStart = Date()
+        print("⏱️ [Performance] AudioManager.loadBook START for '\(book.title)'")
         // If this book is already loaded, don't reload it
         if currentBookID == book.id && player != nil {
             return
@@ -422,10 +424,11 @@ class AudioManager: NSObject, ObservableObject {
             actualURL = URL(fileURLWithPath: resolvedPath)
         } else {
             // Try to find the file in the Books directory (including subdirectories) by filename
+            // This search can be slow for large directories, but file is usually found immediately
             let booksDir = BookFileManager.shared.getBooksDirectory()
             let fileName = book.fileURL.lastPathComponent
             
-            // Recursively search for the file
+            // Recursively search for the file (synchronous but usually fast)
             func searchForFile(in directory: URL, fileName: String) -> URL? {
                 guard let enumerator = FileManager.default.enumerator(
                     at: directory,
@@ -445,7 +448,12 @@ class AudioManager: NSObject, ObservableObject {
                 return nil
             }
             
+            let searchStart = Date()
             if let foundURL = searchForFile(in: booksDir, fileName: fileName) {
+                let searchElapsed = Date().timeIntervalSince(searchStart)
+                if searchElapsed > 0.1 {
+                    print("⏱️ [Performance] File search took \(String(format: "%.3f", searchElapsed))s")
+                }
                 actualURL = foundURL
                 print("✅ AudioManager: Found file at: \(foundURL.path)")
             } else {
@@ -494,14 +502,31 @@ class AudioManager: NSObject, ObservableObject {
                     // Set initial position once ready (wait for seek to complete)
                     if book.currentPosition > 0 {
                         let time = CMTime(seconds: book.currentPosition, preferredTimescale: 600)
-                        self.player?.seek(to: time, completionHandler: { _ in
-                            // Seek completed
+                        let savedPosition = book.currentPosition
+                        self.player?.seek(to: time, completionHandler: { [weak self] completed in
+                            guard let self = self, completed else { return }
+                            // Seek completed - trigger transcription check for initial position
+                            DispatchQueue.main.async {
+                                self.currentTime = savedPosition
+                                self.updateCurrentChapterIndex()
+                                // Trigger transcription check for initial position
+                                self.checkAndTriggerTranscriptionForSeek(time: savedPosition)
+                            }
                         })
+                    } else {
+                        // Even at position 0, check if transcription is needed
+                        DispatchQueue.main.async {
+                            self.checkAndTriggerTranscriptionForSeek(time: 0)
+                        }
                     }
                     
                     // Load duration and parse chapters
                     Task {
+                        let durationStart = Date()
+                        print("⏱️ [Performance] loadDurationAndChapters START")
                         await self.loadDurationAndChapters(for: item)
+                        let durationElapsed = Date().timeIntervalSince(durationStart)
+                        print("⏱️ [Performance] loadDurationAndChapters END - elapsed: \(String(format: "%.3f", durationElapsed))s")
                     }
                     
                     // Observe player rate to sync isPlaying state
@@ -551,6 +576,9 @@ class AudioManager: NSObject, ObservableObject {
             name: .AVPlayerItemFailedToPlayToEndTime,
             object: newPlayerItem
         )
+        
+        let loadElapsed = Date().timeIntervalSince(loadStart)
+        print("⏱️ [Performance] AudioManager.loadBook END (synchronous part) - elapsed: \(String(format: "%.3f", loadElapsed))s")
     }
     
     private func loadDurationAndChapters(for item: AVPlayerItem) async {
@@ -641,6 +669,10 @@ class AudioManager: NSObject, ObservableObject {
             return
         }
         
+        // Trigger transcription check when playback starts/resumes
+        // This catches cases where user resumes playback in untranscribed areas
+        checkAndTriggerTranscriptionForSeek(time: currentTime)
+        
         // Ensure playback speed is set
         player.rate = Float(playbackSpeed)
         player.play()
@@ -678,6 +710,12 @@ class AudioManager: NSObject, ObservableObject {
             return
         }
         
+        let hours = Int(time) / 3600
+        let minutes = Int(time) / 60 % 60
+        let seconds = Int(time) % 60
+        let seekTimeFormatted = String(format: "%02d:%02d:%02d", hours, minutes, seconds)
+        print("🎯 [AudioManager] USER SEEKED to location: \(seekTimeFormatted) (\(time)s)")
+        
         let cmTime = CMTime(seconds: time, preferredTimescale: 600)
         let wasPlaying = isPlaying
         
@@ -688,6 +726,7 @@ class AudioManager: NSObject, ObservableObject {
         
         player.seek(to: cmTime, completionHandler: { [weak self] completed in
             guard let self = self, completed else {
+                print("⚠️ [AudioManager] Seek completed with error or was cancelled")
                 completion?()
                 return
             }
@@ -697,10 +736,15 @@ class AudioManager: NSObject, ObservableObject {
                 self.updateCurrentChapterIndex()
                 self.updateNowPlayingInfo() // Update Now Playing after seek
                 
+                print("✅ [AudioManager] Seek completed successfully to \(seekTimeFormatted)")
+                
                 // Resume playback if it was playing before seek
                 if wasPlaying && self.isPlayerReady {
                     self.play()
                 }
+                
+                // Trigger transcription check for seek position (debounced, non-blocking)
+                self.checkAndTriggerTranscriptionForSeek(time: time)
                 
                 completion?()
             }
@@ -883,7 +927,83 @@ class AudioManager: NSObject, ObservableObject {
         }
     }
     
+    // MARK: - Seek-Triggered Transcription
+    
+    private var seekTranscriptionTask: Task<Void, Never>?
+    
+    func checkAndTriggerTranscriptionForSeek(time: TimeInterval) {
+        // Cancel any existing seek transcription task
+        seekTranscriptionTask?.cancel()
+        
+        // SpeechAnalyzer and SpeechModule require iOS 26.0+
+        guard #available(iOS 26.0, *) else {
+            print("⚠️ [AudioManager] iOS 26.0+ check FAILED - transcription not available (simulator likely running iOS < 26.0)")
+            return
+        }
+        
+        print("✅ [AudioManager] iOS 26.0+ check PASSED - transcription available")
+        
+        // Get current book info on main thread
+        guard let book = currentBook else {
+            print("⚠️ [AudioManager] No current book available for transcription check")
+            return
+        }
+        
+        print("✅ [AudioManager] Current book found: '\(book.title)', checking transcription needs")
+        
+        let bookID = book.id
+        let seekTime = time
+        
+        // Create debounced task - wait 1 second after seek before checking
+        // All iOS 26.0+ API calls must be inside this #available block
+        seekTranscriptionTask = Task.detached(priority: .userInitiated) {
+            // Wait 1 second to debounce rapid seeks
+            try? await Task.sleep(nanoseconds: 1_000_000_000) // 1 second
+            
+            // Check if task was cancelled (another seek happened)
+            guard !Task.isCancelled else {
+                return
+            }
+            
+            // All transcription API calls must be inside #available check
+            guard #available(iOS 26.0, *) else {
+                return
+            }
+            
+            // Check if SpeechTranscriber is available before proceeding
+            let isAvailable = await TranscriptionManager.shared.isTranscriberAvailable()
+            print("🔍 [AudioManager] SpeechTranscriber availability: \(isAvailable ? "AVAILABLE" : "NOT AVAILABLE")")
+            guard isAvailable else {
+                print("⚠️ [AudioManager] SpeechTranscriber not available on this device/simulator - transcription disabled")
+                return
+            }
+            
+            let chunkSize: TimeInterval = 120.0 // 2 minutes
+            
+            // Check if transcription is needed at this seek position
+            print("🔍 [AudioManager] Calling checkIfTranscriptionNeededAtSeekPosition for seekTime=\(seekTime)s")
+            if let chunkStartTime = await TranscriptionManager.shared.checkIfTranscriptionNeededAtSeekPosition(
+                bookID: bookID,
+                seekTime: seekTime,
+                chunkSize: chunkSize
+            ) {
+                print("✅ [AudioManager] Transcription needed, chunkStartTime=\(chunkStartTime)s, enqueueing task")
+                // Enqueue high-priority task for immediate transcription
+                let task = TranscriptionQueue.TranscriptionTask(
+                    bookID: bookID,
+                    startTime: chunkStartTime,
+                    priority: .high
+                )
+                await TranscriptionQueue.shared.enqueue(task)
+                print("✅ [AudioManager] Transcription task enqueued successfully")
+            } else {
+                print("ℹ️ [AudioManager] Transcription not needed at seekTime=\(seekTime)s (already covered)")
+            }
+        }
+    }
+    
     deinit {
+        seekTranscriptionTask?.cancel()
         cancelSleepTimer()
         removeTimeObserver()
         statusObserver?.invalidate()
