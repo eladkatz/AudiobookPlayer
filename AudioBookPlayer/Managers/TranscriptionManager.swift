@@ -275,9 +275,14 @@ class TranscriptionManager: ObservableObject {
         let fileDuration = Double(audioFile.length) / audioFile.fileFormat.sampleRate
         debugLog("✅ Audio file opened: duration = \(fileDuration) seconds, sample rate = \(audioFile.fileFormat.sampleRate) Hz")
         
+        // Check for cancellation before starting analysis
+        try Task.checkCancellation()
+        
         // Start analysis
         debugLog("🚀 Starting audio analysis...")
         if let lastSample = try await analyzer.analyzeSequence(from: audioFile) {
+            // Check for cancellation after analysis
+            try Task.checkCancellation()
             debugLog("✅ Analysis sequence completed, finalizing...")
             try await analyzer.finalizeAndFinish(through: lastSample)
             debugLog("✅ Analysis finalized")
@@ -285,6 +290,9 @@ class TranscriptionManager: ObservableObject {
             debugLog("⚠️ Analysis sequence returned nil, cancelling...")
             await analyzer.cancelAndFinishNow()
         }
+        
+        // Check for cancellation before processing results
+        try Task.checkCancellation()
         
         // Process results sentence by sentence with actual timestamps
         debugLog("📝 Processing transcription results...")
@@ -295,6 +303,8 @@ class TranscriptionManager: ObservableObject {
         var resultCount = 0
         
         for try await result in transcriber.results {
+            // Check for cancellation in the loop
+            try Task.checkCancellation()
             resultCount += 1
             debugLog("📨 Received result #\(resultCount), isFinal: \(result.isFinal)")
             
@@ -519,13 +529,43 @@ class TranscriptionManager: ObservableObject {
     // MARK: - Phase 1: Refactored Transcription Method
     
     func transcribeChunk(book: Book, startTime: TimeInterval) async {
+        // Check if transcription is enabled
+        guard TranscriptionSettings.shared.isEnabled else {
+            let disabledMsg = "🚫 [TranscriptionManager] Transcription is disabled - skipping transcribeChunk for book: '\(book.title)', startTime: \(startTime)s"
+            print(disabledMsg)
+            FileLogger.shared.log(disabledMsg, category: "TranscriptionManager")
+            return
+        }
+        
+        // Check for cancellation
+        if Task.isCancelled {
+            let cancelMsg = "🚫 [TranscriptionManager] Transcription task cancelled before starting: book: '\(book.title)', startTime: \(startTime)s"
+            print(cancelMsg)
+            FileLogger.shared.log(cancelMsg, category: "TranscriptionManager")
+            return
+        }
+        
         let hours = Int(startTime) / 3600
         let minutes = Int(startTime) / 60 % 60
         let seconds = Int(startTime) % 60
         let startTimeFormatted = String(format: "%02d:%02d:%02d", hours, minutes, seconds)
         
-        print("🚀 [TranscriptionManager] TRANSCRIPTION TASK STARTED at start time index: \(startTimeFormatted) (\(startTime)s)")
-        print("🚀 [TranscriptionManager] Book: '\(book.title)' (ID: \(book.id.uuidString))")
+        let startMsg = "🚀 [TranscriptionManager] TRANSCRIPTION TASK STARTED at start time index: \(startTimeFormatted) (\(startTime)s)"
+        let bookMsg = "🚀 [TranscriptionManager] Book: '\(book.title)' (ID: \(book.id.uuidString))"
+        print(startMsg)
+        print(bookMsg)
+        FileLogger.shared.log(startMsg, category: "TranscriptionManager")
+        FileLogger.shared.log(bookMsg, category: "TranscriptionManager")
+        
+        let segmentStartTime = startTime
+        let segmentDuration: TimeInterval = 2 * 60 // 2 minutes
+        let segmentEndTime = segmentStartTime + segmentDuration
+        
+        // Track instance start
+        let instanceID = TranscriptionInstanceTracker.shared.startInstance(
+            startTime: segmentStartTime,
+            endTime: segmentEndTime
+        )
         
         await MainActor.run {
             isTranscribing = true
@@ -542,9 +582,6 @@ class TranscriptionManager: ObservableObject {
         }
         
         do {
-            let segmentStartTime = startTime
-            let segmentDuration: TimeInterval = 2 * 60 // 2 minutes
-            let segmentEndTime = segmentStartTime + segmentDuration
             
             let startTimeFormatted = formatTime(segmentStartTime)
             let endTimeFormatted = formatTime(segmentEndTime)
@@ -570,12 +607,18 @@ class TranscriptionManager: ObservableObject {
             let tempFile = try await extractAudioSegment(from: actualURL, startTime: segmentStartTime, duration: segmentDuration)
             tempFileURL = tempFile
             
+            // Check for cancellation before transcription
+            try Task.checkCancellation()
+            
             // Perform transcription
             await MainActor.run {
                 currentStatus = "Transcribing audio..."
                 currentBookID = book.id
             }
             var sentences = try await performTranscription(audioFileURL: tempFile)
+            
+            // Check for cancellation after transcription
+            try Task.checkCancellation()
             
             // Apply timestamp offset
             debugLog("🕐 Applying timestamp offset: adding \(segmentStartTime)s to all sentences")
@@ -613,9 +656,18 @@ class TranscriptionManager: ObservableObject {
             let completionEndSeconds = Int(segmentEndTime) % 60
             let completionEndTimeFormatted = String(format: "%02d:%02d:%02d", completionEndHours, completionEndMinutes, completionEndSeconds)
             
-            print("✅ [TranscriptionManager] TRANSCRIPTION TASK COMPLETED at start time index: \(completionStartTimeFormatted) (\(segmentStartTime)s)")
-            print("✅ [TranscriptionManager] Contained \(sentences.count) sentences")
-            print("✅ [TranscriptionManager] Time range: \(completionStartTimeFormatted) - \(completionEndTimeFormatted) (ending at \(segmentEndTime)s)")
+            let completeMsg1 = "✅ [TranscriptionManager] TRANSCRIPTION TASK COMPLETED at start time index: \(completionStartTimeFormatted) (\(segmentStartTime)s)"
+            let completeMsg2 = "✅ [TranscriptionManager] Contained \(sentences.count) sentences"
+            let completeMsg3 = "✅ [TranscriptionManager] Time range: \(completionStartTimeFormatted) - \(completionEndTimeFormatted) (ending at \(segmentEndTime)s)"
+            print(completeMsg1)
+            print(completeMsg2)
+            print(completeMsg3)
+            FileLogger.shared.log(completeMsg1, category: "TranscriptionManager")
+            FileLogger.shared.log(completeMsg2, category: "TranscriptionManager")
+            FileLogger.shared.log(completeMsg3, category: "TranscriptionManager")
+            
+            // Track instance completion
+            TranscriptionInstanceTracker.shared.completeInstance(id: instanceID, sentenceCount: sentences.count)
             
             await MainActor.run {
                 currentStatus = "Transcription complete!"
@@ -623,13 +675,44 @@ class TranscriptionManager: ObservableObject {
             }
             
         } catch {
+            // Handle cancellation error
+            if error is CancellationError || Task.isCancelled {
+                let hours = Int(startTime) / 3600
+                let minutes = Int(startTime) / 60 % 60
+                let seconds = Int(startTime) % 60
+                let startTimeFormatted = String(format: "%02d:%02d:%02d", hours, minutes, seconds)
+                
+                let cancelMsg1 = "🚫 [TranscriptionManager] TRANSCRIPTION TASK CANCELLED at start time index: \(startTimeFormatted) (\(startTime)s)"
+                let cancelMsg2 = "🚫 [TranscriptionManager] Cancellation error: \(error.localizedDescription)"
+                print(cancelMsg1)
+                print(cancelMsg2)
+                FileLogger.shared.log(cancelMsg1, category: "TranscriptionManager")
+                FileLogger.shared.log(cancelMsg2, category: "TranscriptionManager")
+                
+                // Track instance failure with cancellation error
+                TranscriptionInstanceTracker.shared.failInstance(id: instanceID, error: TranscriptionError.transcriptionCancelled)
+                
+                await MainActor.run {
+                    errorMessage = "Transcription was cancelled."
+                    currentStatus = "Transcription cancelled"
+                }
+                return
+            }
+            
             let hours = Int(startTime) / 3600
             let minutes = Int(startTime) / 60 % 60
             let seconds = Int(startTime) % 60
             let startTimeFormatted = String(format: "%02d:%02d:%02d", hours, minutes, seconds)
             
-            print("❌ [TranscriptionManager] TRANSCRIPTION TASK FAILED at start time index: \(startTimeFormatted) (\(startTime)s)")
-            print("❌ [TranscriptionManager] Error: \(error.localizedDescription)")
+            let failMsg1 = "❌ [TranscriptionManager] TRANSCRIPTION TASK FAILED at start time index: \(startTimeFormatted) (\(startTime)s)"
+            let failMsg2 = "❌ [TranscriptionManager] Error: \(error.localizedDescription)"
+            print(failMsg1)
+            print(failMsg2)
+            FileLogger.shared.log(failMsg1, category: "TranscriptionManager")
+            FileLogger.shared.log(failMsg2, category: "TranscriptionManager")
+            
+            // Track instance failure
+            TranscriptionInstanceTracker.shared.failInstance(id: instanceID, error: error)
             
             await MainActor.run {
                 errorMessage = error.localizedDescription
@@ -691,28 +774,61 @@ class TranscriptionManager: ObservableObject {
     // MARK: - Phase 5: Seeking Support
     
     func checkIfTranscriptionNeededAtSeekPosition(bookID: UUID, seekTime: TimeInterval, chunkSize: TimeInterval) async -> TimeInterval? {
-        print("🔍 [TranscriptionManager] checkIfTranscriptionNeededAtSeekPosition called: bookID=\(bookID.uuidString), seekTime=\(seekTime)s, chunkSize=\(chunkSize)s")
+        let checkMsg = "🔍 [TranscriptionManager] checkIfTranscriptionNeededAtSeekPosition called: bookID=\(bookID.uuidString), seekTime=\(seekTime)s, chunkSize=\(chunkSize)s"
+        print(checkMsg)
+        FileLogger.shared.log(checkMsg, category: "TranscriptionManager")
         
+        // First, check if a sentence actually exists at this position
+        let sentenceAtPosition = await database.findSentence(bookID: bookID, atTime: seekTime)
+        
+        if let sentence = sentenceAtPosition {
+            let existsMsg1 = "✅ [TranscriptionManager] Sentence EXISTS at seekTime (\(seekTime)s): '\(sentence.text.prefix(50))...' [\(sentence.startTime)s - \(sentence.endTime)s]"
+            let existsMsg2 = "ℹ️ [TranscriptionManager] Transcription NOT NEEDED - sentence already exists at this position"
+            print(existsMsg1)
+            print(existsMsg2)
+            FileLogger.shared.log(existsMsg1, category: "TranscriptionManager")
+            FileLogger.shared.log(existsMsg2, category: "TranscriptionManager")
+            return nil
+        }
+        
+        // No sentence at this position - check if we need to transcribe
         let progress = await database.getTranscriptionProgress(bookID: bookID)
         let threshold = chunkSize / 2.0
         
-        print("🔍 [TranscriptionManager] Current progress=\(progress)s, seekTime=\(seekTime)s, threshold=\(threshold)s, required=\(seekTime + threshold)s")
+        let noSentenceMsg1 = "🔍 [TranscriptionManager] No sentence found at seekTime (\(seekTime)s)"
+        let noSentenceMsg2 = "🔍 [TranscriptionManager] Current progress=\(progress)s, seekTime=\(seekTime)s, threshold=\(threshold)s, required=\(seekTime + threshold)s"
+        print(noSentenceMsg1)
+        print(noSentenceMsg2)
+        FileLogger.shared.log(noSentenceMsg1, category: "TranscriptionManager")
+        FileLogger.shared.log(noSentenceMsg2, category: "TranscriptionManager")
         
         if progress < seekTime + threshold {
             // Calculate chunk boundary
             let chunkStartTime = floor(seekTime / chunkSize) * chunkSize
-            print("✅ [TranscriptionManager] Transcription IS NEEDED, chunkStartTime=\(chunkStartTime)s")
+            let neededMsg = "✅ [TranscriptionManager] Transcription IS NEEDED, chunkStartTime=\(chunkStartTime)s"
+            print(neededMsg)
+            FileLogger.shared.log(neededMsg, category: "TranscriptionManager")
             return chunkStartTime
         }
         
-        print("ℹ️ [TranscriptionManager] Transcription NOT NEEDED, progress (\(progress)s) already covers seekTime (\(seekTime)s)")
-        return nil
+        // Progress is ahead, but no sentence exists - this means there's a gap
+        // Calculate which chunk contains the seek position and return it
+        let chunkStartTime = floor(seekTime / chunkSize) * chunkSize
+        let gapMsg1 = "⚠️ [TranscriptionManager] GAP DETECTED: Progress (\(progress)s) is ahead but no sentence at seekTime (\(seekTime)s)"
+        let gapMsg2 = "✅ [TranscriptionManager] Transcription IS NEEDED to fill gap, chunkStartTime=\(chunkStartTime)s"
+        print(gapMsg1)
+        print(gapMsg2)
+        FileLogger.shared.log(gapMsg1, category: "TranscriptionManager")
+        FileLogger.shared.log(gapMsg2, category: "TranscriptionManager")
+        return chunkStartTime
     }
 
     // MARK: - Debug Logging
     
     private func debugLog(_ message: String) {
-        print("🔊 [TranscriptionManager] \(message)")
+        let logMsg = "🔊 [TranscriptionManager] \(message)"
+        print(logMsg)
+        FileLogger.shared.log(logMsg, category: "TranscriptionManager")
     }
 }
 
@@ -755,6 +871,7 @@ enum TranscriptionError: LocalizedError {
     case localeNotSupported
     case modelDownloadFailed
     case exportFailed(String? = nil)
+    case transcriptionCancelled
     
     var errorDescription: String? {
         switch self {
@@ -770,6 +887,8 @@ enum TranscriptionError: LocalizedError {
             return "Failed to download language model. Please check your internet connection."
         case .exportFailed(let message):
             return message ?? "Failed to extract audio segment."
+        case .transcriptionCancelled:
+            return "Transcription was cancelled."
         }
     }
 }

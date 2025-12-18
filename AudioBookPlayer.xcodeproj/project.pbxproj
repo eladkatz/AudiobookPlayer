@@ -10,10 +10,15 @@
 		483121932EEDE27A00AC614C /* AIMagicControlsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 483121922EEDE27A00AC614C /* AIMagicControlsView.swift */; };
 		483121952EEDE27B00AC614D /* TranscriptionManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 483121942EEDE27B00AC614D /* TranscriptionManager.swift */; };
 		483121972EEDE27C00AC614E /* TranscriptionDatabase.swift in Sources */ = {isa = PBXBuildFile; fileRef = 483121962EEDE27C00AC614E /* TranscriptionDatabase.swift */; };
-		483121982EEDE27D00AC614F /* TranscriptionQueue.swift in Sources */ = {isa = PBXBuildFile; fileRef = 483121972EEDE27D00AC614F /* TranscriptionQueue.swift */; };
 		483121972EEFCC3E00AC614C /* GRDB in Frameworks */ = {isa = PBXBuildFile; productRef = 483121962EEFCC3E00AC614C /* GRDB */; };
+		483121982EEDE27D00AC614F /* TranscriptionQueue.swift in Sources */ = {isa = PBXBuildFile; fileRef = 483121972EEDE27D00AC614F /* TranscriptionQueue.swift */; };
 		4865BB8C2EEFCDAF0005A693 /* GRDB in Frameworks */ = {isa = PBXBuildFile; productRef = 4865BB8B2EEFCDAF0005A693 /* GRDB */; };
+		48667A512EF24BC000F84F7B /* ChaptersListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 48667A502EF24BC000F84F7B /* ChaptersListView.swift */; };
 		4897A06B2EE902FB0042A919 /* GoogleSignIn in Frameworks */ = {isa = PBXBuildFile; productRef = 4897A06A2EE902FB0042A919 /* GoogleSignIn */; };
+		91E6E788BC8B476F82159451 /* TranscriptionInstanceTracker.swift in Sources */ = {isa = PBXBuildFile; fileRef = C568BDBE83D749C98DB9D280 /* TranscriptionInstanceTracker.swift */; };
+		9813B657FF224A0F84396355 /* TranscriptionDebugDashboardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7F6AE1BFF6845CA8D05FC44 /* TranscriptionDebugDashboardView.swift */; };
+		D426636F58B540D790CADA3F /* FileLogger.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2BF2CD7B44CF452CAF2836F0 /* FileLogger.swift */; };
+		89C4F2EB93644D1E93FB307C /* TranscriptionSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = E851F53F3B4545E4AF4AA3A0 /* TranscriptionSettings.swift */; };
 		A1000001 /* AudioBookPlayerApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000 /* AudioBookPlayerApp.swift */; };
 		A1000003 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000002 /* ContentView.swift */; };
 		A1000005 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A1000004 /* Assets.xcassets */; };
@@ -39,6 +44,11 @@
 		483121942EEDE27B00AC614D /* TranscriptionManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptionManager.swift; sourceTree = "<group>"; };
 		483121962EEDE27C00AC614E /* TranscriptionDatabase.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptionDatabase.swift; sourceTree = "<group>"; };
 		483121972EEDE27D00AC614F /* TranscriptionQueue.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptionQueue.swift; sourceTree = "<group>"; };
+		48667A502EF24BC000F84F7B /* ChaptersListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChaptersListView.swift; sourceTree = "<group>"; };
+		A7F6AE1BFF6845CA8D05FC44 /* TranscriptionDebugDashboardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptionDebugDashboardView.swift; sourceTree = "<group>"; };
+		C568BDBE83D749C98DB9D280 /* TranscriptionInstanceTracker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptionInstanceTracker.swift; sourceTree = "<group>"; };
+		2BF2CD7B44CF452CAF2836F0 /* FileLogger.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileLogger.swift; sourceTree = "<group>"; };
+		E851F53F3B4545E4AF4AA3A0 /* TranscriptionSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptionSettings.swift; sourceTree = "<group>"; };
 		A1000000 /* AudioBookPlayerApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioBookPlayerApp.swift; sourceTree = "<group>"; };
 		A1000002 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		A1000004 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
@@ -92,10 +102,12 @@
 			path = AudioBookPlayer;
 			sourceTree = "<group>";
 		};
-		A1000027 /* Views */ = {
+			A1000027 /* Views */ = {
 			isa = PBXGroup;
 			children = (
+				48667A502EF24BC000F84F7B /* ChaptersListView.swift */,
 				483121922EEDE27A00AC614C /* AIMagicControlsView.swift */,
+				A7F6AE1BFF6845CA8D05FC44 /* TranscriptionDebugDashboardView.swift */,
 				A1000013 /* PlayerView.swift */,
 				A1000015 /* LibraryView.swift */,
 				A1000017 /* SettingsView.swift */,
@@ -115,13 +127,16 @@
 			path = Models;
 			sourceTree = "<group>";
 		};
-		A1000029 /* Managers */ = {
+			A1000029 /* Managers */ = {
 			isa = PBXGroup;
 			children = (
 				A1000011 /* AudioManager.swift */,
 				483121942EEDE27B00AC614D /* TranscriptionManager.swift */,
 				483121962EEDE27C00AC614E /* TranscriptionDatabase.swift */,
 				483121972EEDE27D00AC614F /* TranscriptionQueue.swift */,
+				C568BDBE83D749C98DB9D280 /* TranscriptionInstanceTracker.swift */,
+				2BF2CD7B44CF452CAF2836F0 /* FileLogger.swift */,
+				E851F53F3B4545E4AF4AA3A0 /* TranscriptionSettings.swift */,
 				A1000019 /* PersistenceManager.swift */,
 				A1000024 /* FileManager.swift */,
 				A1000049 /* GoogleDriveManager.swift */,
@@ -231,6 +246,7 @@
 				A1000014 /* PlayerView.swift in Sources */,
 				A1000016 /* LibraryView.swift in Sources */,
 				A1000018 /* SettingsView.swift in Sources */,
+				48667A512EF24BC000F84F7B /* ChaptersListView.swift in Sources */,
 				A1000020 /* PersistenceManager.swift in Sources */,
 				A1000044 /* DocumentPicker.swift in Sources */,
 				A1000023 /* FileManager.swift in Sources */,
@@ -243,6 +259,10 @@
 				483121952EEDE27B00AC614D /* TranscriptionManager.swift in Sources */,
 				483121972EEDE27C00AC614E /* TranscriptionDatabase.swift in Sources */,
 				483121982EEDE27D00AC614F /* TranscriptionQueue.swift in Sources */,
+				91E6E788BC8B476F82159451 /* TranscriptionInstanceTracker.swift in Sources */,
+				9813B657FF224A0F84396355 /* TranscriptionDebugDashboardView.swift in Sources */,
+				D426636F58B540D790CADA3F /* FileLogger.swift in Sources */,
+				89C4F2EB93644D1E93FB307C /* TranscriptionSettings.swift in Sources */,
 				A1000001 /* AudioBookPlayerApp.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

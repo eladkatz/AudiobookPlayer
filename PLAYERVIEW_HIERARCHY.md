@@ -195,3 +195,4 @@ PlayerView
 **Secondary Issue:** The nested ScrollView creates potential UX confusion and should be simplified.
 
 
+

@@ -2,207 +2,304 @@ import SwiftUI
 
 @available(iOS 26.0, *)
 struct AIMagicControlsView: View {
-    @Environment(\.dismiss) var dismiss
     @EnvironmentObject var appState: AppState
     @ObservedObject private var audioManager = AudioManager.shared
     @StateObject private var transcriptionManager = TranscriptionManager.shared
-    @State private var highlightedSentenceID: UUID?
+    @ObservedObject private var transcriptionSettings = TranscriptionSettings.shared
     @State private var isLoading = false
     
+    // MARK: - Reload State Management (Infinite Loop Prevention)
+    @State private var reloadTask: Task<Void, Never>?
+    @State private var isReloading = false
+    @State private var lastReloadTime: Date?
+    @State private var reloadAttemptCount = 0
+    private let maxReloadAttempts = 2
+    private let reloadDebounceInterval: TimeInterval = 3.0
+    
     var body: some View {
-        NavigationView {
+        GeometryReader { geometry in
+            let isPortrait = geometry.size.height > geometry.size.width
+            let isCompact = geometry.size.width < 400 // iPhone SE and smaller
+            
             VStack(spacing: 0) {
-                // Top 80% - Transcription content
-                ScrollViewReader { proxy in
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 12) {
-                            if isLoading {
-                                loadingStateView
-                            } else if !transcriptionManager.transcribedSentences.isEmpty {
-                                transcriptionContentView
-                                    .onChange(of: highlightedSentenceID) { oldID, newID in
-                                        if let newID = newID {
-                                            withAnimation(.easeInOut(duration: 0.3)) {
-                                                proxy.scrollTo(newID, anchor: UnitPoint.center)
-                                            }
-                                        }
-                                    }
-                            } else {
-                                emptyStateView
-                            }
+                // Check if transcription is disabled first
+                if !transcriptionSettings.isEnabled {
+                    disabledStateView
+                } else if isLoading {
+                    loadingStateView
+                } else if transcriptionManager.isTranscribing {
+                    transcribingStateView
+                } else if let currentSentence = currentSentence {
+                    // Show current sentence (captions style)
+                    // Adaptive layout: more lines in portrait, fewer in landscape
+                    adaptiveSentenceView(
+                        sentence: currentSentence,
+                        isPortrait: isPortrait,
+                        isCompact: isCompact
+                    )
+                } else {
+                    // No transcription available
+                    errorStateView
+                }
+            }
+            .frame(minHeight: 60)
+        }
+        .task {
+            loadInitialSentences()
+        }
+        .onChange(of: appState.currentBook?.id) { oldID, newID in
+            handleBookChange(newID: newID)
+        }
+        .onChange(of: audioManager.currentTime) { oldTime, newTime in
+            updateCurrentSentence(for: newTime)
+        }
+    }
+    
+    // MARK: - Current Sentence
+    
+    @State private var currentSentence: TranscribedSentence?
+    
+    private func updateCurrentSentence(for time: TimeInterval) {
+        // Guard: Prevent reloads when transcription is disabled
+        guard transcriptionSettings.isEnabled else {
+            print("🚫 [AIMagicControlsView] updateCurrentSentence: Transcription disabled, skipping")
+            return
+        }
+        
+        // Guard: Debounce rapid calls
+        if let lastReload = lastReloadTime {
+            let timeSinceLastReload = Date().timeIntervalSince(lastReload)
+            if timeSinceLastReload < reloadDebounceInterval {
+                print("⏸️ [AIMagicControlsView] updateCurrentSentence: Debouncing rapid call (last reload was \(String(format: "%.2f", timeSinceLastReload))s ago)")
+                return
+            }
+        }
+        
+        guard !transcriptionManager.transcribedSentences.isEmpty else {
+            print("⚠️ [AIMagicControlsView] updateCurrentSentence: No sentences loaded at time \(time)s")
+            currentSentence = nil
+            // Try to reload sentences if we have a book
+            if let book = appState.currentBook {
+                Task {
+                    await reloadSentencesAround(time: time, bookID: book.id)
+                }
+            }
+            return
+        }
+        
+        // Check if current time is within loaded sentence range
+        let loadedStart = transcriptionManager.transcribedSentences.first?.startTime ?? 0
+        let loadedEnd = transcriptionManager.transcribedSentences.last?.endTime ?? 0
+        let isWithinLoadedRange = time >= loadedStart && time <= loadedEnd
+        
+        // Find sentence that contains current time
+        if let sentence = transcriptionManager.transcribedSentences.first(where: { sentence in
+            time >= sentence.startTime && time <= sentence.endTime
+        }) {
+            if currentSentence?.id != sentence.id {
+                print("✅ [AIMagicControlsView] updateCurrentSentence: Found sentence at \(time)s - '\(sentence.text.prefix(50))...' [\(sentence.startTime)s-\(sentence.endTime)s]")
+            }
+            withAnimation(.easeInOut(duration: 0.2)) {
+                currentSentence = sentence
+            }
+        } else {
+            // If no exact match, find closest sentence within 2 seconds
+            if let closestSentence = transcriptionManager.transcribedSentences.min(by: { sentence1, sentence2 in
+                let diff1 = abs(sentence1.startTime - time)
+                let diff2 = abs(sentence2.startTime - time)
+                return diff1 < diff2
+            }), abs(closestSentence.startTime - time) < 2.0 {
+                print("✅ [AIMagicControlsView] updateCurrentSentence: Using closest sentence (within 2s) at \(time)s - '\(closestSentence.text.prefix(50))...' [\(closestSentence.startTime)s-\(closestSentence.endTime)s]")
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    currentSentence = closestSentence
+                }
+            } else {
+                // No sentence found - check if we need to reload for new time range
+                if !isWithinLoadedRange {
+                    print("⚠️ [AIMagicControlsView] updateCurrentSentence: Time \(time)s is outside loaded range [\(loadedStart)s-\(loadedEnd)s], reloading...")
+                    currentSentence = nil
+                    if let book = appState.currentBook {
+                        Task {
+                            await reloadSentencesAround(time: time, bookID: book.id)
                         }
-                        .padding()
                     }
-                    .frame(maxHeight: .infinity)
-                }
-                
-                // Bottom 20% - "What did I miss?" button
-                VStack {
-                    Button(action: {
-                        // Placeholder - does nothing for now
-                    }) {
-                        Text("What did I miss?")
-                            .font(.headline)
-                            .foregroundColor(.white)
-                            .frame(maxWidth: .infinity)
-                            .padding()
-                            .background(Color.blue)
-                            .cornerRadius(12)
-                    }
-                    .padding(.horizontal)
-                    .padding(.bottom)
-                }
-                .frame(height: UIScreen.main.bounds.height * 0.2)
-                .background(Color(.systemBackground))
-            }
-            .navigationTitle(navigationTitle)
-            .navigationBarTitleDisplayMode(.inline)
-            .task {
-                loadInitialSentences()
-            }
-            .onChange(of: appState.currentBook?.id) { oldID, newID in
-                handleBookChange(newID: newID)
-            }
-            .onChange(of: audioManager.currentTime) { oldTime, newTime in
-                let oldHours = Int(oldTime) / 3600
-                let oldMinutes = Int(oldTime) / 60 % 60
-                let oldSeconds = Int(oldTime) % 60
-                let oldTimeFormatted = String(format: "%02d:%02d:%02d", oldHours, oldMinutes, oldSeconds)
-                
-                let newHours = Int(newTime) / 3600
-                let newMinutes = Int(newTime) / 60 % 60
-                let newSeconds = Int(newTime) % 60
-                let newTimeFormatted = String(format: "%02d:%02d:%02d", newHours, newMinutes, newSeconds)
-                
-                // Detect if this is a seek (large jump in time)
-                let timeDiff = abs(newTime - oldTime)
-                if timeDiff > 5.0 {
-                    print("📖 [AIMagicControlsView] Large time change detected (likely seek): \(oldTimeFormatted) (\(oldTime)s) -> \(newTimeFormatted) (\(newTime)s), diff=\(timeDiff)s")
-                }
-                
-                updateHighlight(for: newTime)
-            }
-            .onChange(of: audioManager.isPlaying) { oldValue, newValue in
-                if !newValue {
-                    highlightedSentenceID = nil
-                }
-            }
-            .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button("Done") {
-                        dismiss()
-                    }
+                } else {
+                    print("⚠️ [AIMagicControlsView] updateCurrentSentence: No sentence found at \(time)s (within loaded range [\(loadedStart)s-\(loadedEnd)s]) - gap in transcription")
+                    currentSentence = nil
                 }
             }
         }
     }
     
-    // MARK: - Navigation Title
-    
-    private var navigationTitle: String {
-        if transcriptionManager.isTranscribing {
-            let emoji = statusEmoji(for: transcriptionManager.currentStatus)
-            return "\(emoji) \(shortStatusText(for: transcriptionManager.currentStatus))"
+    private func reloadSentencesAround(time: TimeInterval, bookID: UUID) async {
+        // Prevention: Track attempts and prevent concurrent reloads
+        await MainActor.run {
+            // Check if already reloading
+            if isReloading {
+                print("⏸️ [AIMagicControlsView] reloadSentencesAround: Already reloading, skipping")
+                return
+            }
+            
+            // Check if max attempts reached
+            if reloadAttemptCount >= maxReloadAttempts {
+                print("🚫 [AIMagicControlsView] reloadSentencesAround: Max reload attempts (\(maxReloadAttempts)) reached, skipping")
+                return
+            }
+            
+            // Cancel previous reload task if exists
+            reloadTask?.cancel()
+            
+            // Mark as reloading and increment attempt count
+            isReloading = true
+            reloadAttemptCount += 1
+            lastReloadTime = Date()
         }
-        return "AI Magic"
-    }
-    
-    private func statusEmoji(for status: String) -> String {
-        if status.contains("Preparing") {
-            return "⚙️"
-        } else if status.contains("language model") || status.contains("Checking") {
-            return "📚"
-        } else if status.contains("Extracting") || status.contains("audio segment") {
-            return "✂️"
-        } else if status.contains("Transcribing") {
-            return "🎤"
-        } else if status.contains("Inserting") || status.contains("database") {
-            return "💾"
-        } else if status.contains("complete") || status.contains("Complete") {
-            return "✅"
+        
+        print("🔄 [AIMagicControlsView] Reloading sentences around time \(time)s (attempt \(reloadAttemptCount)/\(maxReloadAttempts))")
+        let windowSize: TimeInterval = 300.0 // 5 minutes window
+        let startTime = max(0, time - 60.0)
+        let endTime = time + windowSize
+        
+        await transcriptionManager.loadSentencesForDisplay(
+            bookID: bookID,
+            startTime: startTime,
+            endTime: endTime
+        )
+        
+        let sentenceCount = transcriptionManager.transcribedSentences.count
+        print("🔄 [AIMagicControlsView] Reloaded \(sentenceCount) sentences, range: \(startTime)s-\(endTime)s")
+        
+        // CRITICAL FIX: Do NOT call updateCurrentSentence() again if 0 sentences are loaded
+        // This breaks the infinite loop - if no sentences were loaded, calling updateCurrentSentence()
+        // would trigger another reload, creating an infinite loop
+        await MainActor.run {
+            isReloading = false
+            
+            if sentenceCount > 0 {
+                // Only update if we actually loaded sentences
+                updateCurrentSentence(for: time)
+                // Reset attempt count on success
+                reloadAttemptCount = 0
+            } else {
+                print("⚠️ [AIMagicControlsView] reloadSentencesAround: No sentences loaded, NOT calling updateCurrentSentence() to prevent infinite loop")
+            }
         }
-        return "🔄"
-    }
-    
-    private func shortStatusText(for status: String) -> String {
-        if status.contains("Preparing") {
-            return "Preparing..."
-        } else if status.contains("language model") || status.contains("Checking") {
-            return "Checking model..."
-        } else if status.contains("Extracting") || status.contains("audio segment") {
-            return "Extracting..."
-        } else if status.contains("Transcribing") {
-            return "Transcribing..."
-        } else if status.contains("Inserting") || status.contains("database") {
-            return "Saving..."
-        } else if status.contains("complete") || status.contains("Complete") {
-            return "Complete"
-        }
-        return "Processing..."
     }
     
     // MARK: - View Components
     
     @ViewBuilder
+    private func adaptiveSentenceView(sentence: TranscribedSentence, isPortrait: Bool, isCompact: Bool) -> some View {
+        // Adaptive line limit based on orientation and screen size
+        let lineLimit: Int? = {
+            if isPortrait {
+                return isCompact ? 5 : 6 // More lines in portrait
+            } else {
+                return isCompact ? 3 : 4 // Fewer lines in landscape
+            }
+        }()
+        
+        // Adaptive font size
+        let fontSize: CGFloat = {
+            if isPortrait {
+                return isCompact ? 16 : 18
+            } else {
+                return isCompact ? 14 : 16 // Smaller in landscape for more text
+            }
+        }()
+        
+        // Max height cap - allows scrolling if content exceeds
+        let maxHeight: CGFloat = isPortrait ? 200 : 150
+        
+        ScrollView {
+            Text(sentence.text)
+                .font(.system(size: fontSize, weight: .medium))
+                .foregroundColor(.primary)
+                .multilineTextAlignment(.center)
+                .lineLimit(lineLimit)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity)
+                .padding(.horizontal, isPortrait ? 20 : 24)
+                .padding(.vertical, 16)
+        }
+        .frame(maxHeight: maxHeight)
+        .transition(.opacity)
+    }
+    
+    @ViewBuilder
     private var loadingStateView: some View {
-        VStack(spacing: 12) {
+        HStack(spacing: 8) {
             ProgressView()
-                .scaleEffect(1.5)
+                .scaleEffect(0.8)
             Text("Loading transcription...")
                 .font(.subheadline)
                 .foregroundColor(.secondary)
         }
         .frame(maxWidth: .infinity)
-        .padding(.vertical, 40)
+        .padding(.vertical, 16)
     }
     
     @ViewBuilder
-    private var transcriptionContentView: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            ForEach(transcriptionManager.transcribedSentences, id: \.id) { sentence in
-                sentenceRow(sentence: sentence)
-                Divider()
-            }
+    private var transcribingStateView: some View {
+        HStack(spacing: 8) {
+            ProgressView()
+                .scaleEffect(0.8)
+            Text("Transcribing...")
+                .font(.subheadline)
+                .foregroundColor(.secondary)
         }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 16)
     }
     
-    private func sentenceRow(sentence: TranscribedSentence) -> some View {
-        Text(sentence.text)
-            .font(.body)
-            .padding(.vertical, 8)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(
-                highlightedSentenceID == sentence.id
-                    ? Color.blue.opacity(0.15)
-                    : Color.clear
-            )
-            .cornerRadius(8)
-            .id(sentence.id)
+    private var disabledStateView: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "waveform.slash")
+                .foregroundColor(.red)
+            Text("Transcription is turned off")
+                .font(.subheadline)
+                .foregroundColor(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 16)
     }
     
     @ViewBuilder
-    private var emptyStateView: some View {
-        if !transcriptionManager.isTranscribing &&
-           !isLoading &&
-           transcriptionManager.transcribedSentences.isEmpty &&
-           transcriptionManager.errorMessage == nil {
-            VStack(spacing: 12) {
-                Image(systemName: "text.bubble")
-                    .font(.system(size: 50))
-                    .foregroundColor(.gray)
-                
-                Text("No transcription yet")
-                    .font(.headline)
-                    .foregroundColor(.secondary)
-                
-                Text("Transcription will appear automatically as you listen to the audiobook")
-                    .font(.subheadline)
-                    .foregroundColor(.secondary)
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal)
-            }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 40)
+    private var errorStateView: some View {
+        if let errorMessage = transcriptionManager.errorMessage {
+            // Show error message if available
+            Text(errorMessage)
+                .font(.subheadline)
+                .foregroundColor(.secondary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 20)
+                .padding(.vertical, 16)
+                .onAppear {
+                    print("⚠️ [AIMagicControlsView] ERROR STATE: Showing error message - '\(errorMessage)'")
+                    print("⚠️ [AIMagicControlsView] Error details: isTranscribing=\(transcriptionManager.isTranscribing), sentencesCount=\(transcriptionManager.transcribedSentences.count), isLoading=\(isLoading)")
+                }
+        } else {
+            // No transcription available yet
+            Text("Not yet transcribed")
+                .font(.subheadline)
+                .foregroundColor(.secondary)
+                .padding(.horizontal, 20)
+                .padding(.vertical, 16)
+                .onAppear {
+                    print("⚠️ [AIMagicControlsView] ERROR STATE: Showing 'Not yet transcribed'")
+                    print("⚠️ [AIMagicControlsView] State details: isTranscribing=\(transcriptionManager.isTranscribing), sentencesCount=\(transcriptionManager.transcribedSentences.count), isLoading=\(isLoading), errorMessage=\(transcriptionManager.errorMessage ?? "nil")")
+                    if let book = appState.currentBook {
+                        Task {
+                            let progress = await transcriptionManager.getTranscriptionProgress(bookID: book.id)
+                            print("⚠️ [AIMagicControlsView] Transcription progress for book '\(book.title)': \(progress)s")
+                            if progress == 0 {
+                                print("⚠️ [AIMagicControlsView] No transcription exists yet - transcription may need to be triggered")
+                            } else {
+                                print("⚠️ [AIMagicControlsView] Transcription exists (progress=\(progress)s) but no sentences loaded at current time (\(audioManager.currentTime)s)")
+                            }
+                        }
+                    }
+                }
         }
     }
     
@@ -212,29 +309,12 @@ struct AIMagicControlsView: View {
         Task {
             if let book = appState.currentBook {
                 isLoading = true
-                let centerTime = audioManager.currentTime
-                let windowSize: TimeInterval = 75.0
-                let startTime = max(0, centerTime - 30.0)
-                let endTime = centerTime + windowSize
+                var centerTime = audioManager.currentTime
                 
-                let centerHours = Int(centerTime) / 3600
-                let centerMinutes = Int(centerTime) / 60 % 60
-                let centerSeconds = Int(centerTime) % 60
-                let centerTimeFormatted = String(format: "%02d:%02d:%02d", centerHours, centerMinutes, centerSeconds)
-                
-                let startHours = Int(startTime) / 3600
-                let startMinutes = Int(startTime) / 60 % 60
-                let startSeconds = Int(startTime) % 60
-                let startTimeFormatted = String(format: "%02d:%02d:%02d", startHours, startMinutes, startSeconds)
-                
-                let endHours = Int(endTime) / 3600
-                let endMinutes = Int(endTime) / 60 % 60
-                let endSeconds = Int(endTime) % 60
-                let endTimeFormatted = String(format: "%02d:%02d:%02d", endHours, endMinutes, endSeconds)
-                
-                print("📖 [AIMagicControlsView] Loading initial sentences for book '\(book.title)'")
-                print("📖 [AIMagicControlsView] Center time: \(centerTimeFormatted) (\(centerTime)s)")
-                print("📖 [AIMagicControlsView] Requesting time range: \(startTimeFormatted) (\(startTime)s) - \(endTimeFormatted) (\(endTime)s)")
+                // Load wider window to ensure we have sentences available for current time tracking
+                let windowSize: TimeInterval = 300.0 // 5 minutes window
+                var startTime = max(0, centerTime - 60.0)
+                var endTime = centerTime + windowSize
                 
                 await transcriptionManager.loadSentencesForDisplay(
                     bookID: book.id,
@@ -242,11 +322,32 @@ struct AIMagicControlsView: View {
                     endTime: endTime
                 )
                 
-                print("📖 [AIMagicControlsView] Loaded \(transcriptionManager.transcribedSentences.count) sentences")
+                // Check if loaded sentences actually cover the current time
+                // (currentTime might have been 0.0 when view appeared, but book loads later)
+                let actualCurrentTime = audioManager.currentTime
+                let sentencesCoverCurrentTime = transcriptionManager.transcribedSentences.contains { sentence in
+                    actualCurrentTime >= sentence.startTime && actualCurrentTime <= sentence.endTime
+                }
+                
+                // If sentences don't cover current time, reload around actual current time
+                if !sentencesCoverCurrentTime && actualCurrentTime > 0 {
+                    print("⚠️ [AIMagicControlsView] Loaded sentences (range: \(startTime)s-\(endTime)s) don't cover current time (\(actualCurrentTime)s), reloading...")
+                    centerTime = actualCurrentTime
+                    startTime = max(0, centerTime - 60.0)
+                    endTime = centerTime + windowSize
+                    
+                    await transcriptionManager.loadSentencesForDisplay(
+                        bookID: book.id,
+                        startTime: startTime,
+                        endTime: endTime
+                    )
+                }
+                
+                // Update current sentence after loading
+                updateCurrentSentence(for: actualCurrentTime)
                 
                 // If no sentences loaded, try loading from the beginning (fallback for existing transcriptions)
                 if transcriptionManager.transcribedSentences.isEmpty {
-                    print("🔍 [AIMagicControlsView] No sentences in window, trying to load from beginning...")
                     let progress = await transcriptionManager.getTranscriptionProgress(bookID: book.id)
                     if progress > 0 {
                         await transcriptionManager.loadSentencesForDisplay(
@@ -254,16 +355,19 @@ struct AIMagicControlsView: View {
                             startTime: 0,
                             endTime: progress + 60.0
                         )
-                        print("📖 [AIMagicControlsView] Fallback load completed, now have \(transcriptionManager.transcribedSentences.count) sentences")
+                        updateCurrentSentence(for: actualCurrentTime)
                     }
                     
                     // If still no sentences (or progress is 0), trigger transcription check
-                    // User opened transcription view - if no transcription exists, start it
                     if transcriptionManager.transcribedSentences.isEmpty {
-                        print("🔍 [AIMagicControlsView] No transcription found, triggering transcription check at current position")
-                        audioManager.checkAndTriggerTranscriptionForSeek(time: centerTime)
+                        audioManager.checkAndTriggerTranscriptionForSeek(time: actualCurrentTime)
                     }
+                } else if currentSentence == nil {
+                    // Sentences loaded but none match current time - might be a gap
+                    print("⚠️ [AIMagicControlsView] Sentences loaded (\(transcriptionManager.transcribedSentences.count) sentences) but none match current time (\(actualCurrentTime)s)")
+                    print("⚠️ [AIMagicControlsView] Loaded sentence range: \(transcriptionManager.transcribedSentences.first?.startTime ?? 0)s - \(transcriptionManager.transcribedSentences.last?.endTime ?? 0)s")
                 }
+                
                 isLoading = false
             }
         }
@@ -274,28 +378,10 @@ struct AIMagicControlsView: View {
             Task {
                 isLoading = true
                 let centerTime = audioManager.currentTime
-                let windowSize: TimeInterval = 75.0
-                let startTime = max(0, centerTime - 30.0)
+                // Load wider window to ensure we have sentences available
+                let windowSize: TimeInterval = 300.0 // 5 minutes window
+                let startTime = max(0, centerTime - 60.0)
                 let endTime = centerTime + windowSize
-                
-                let centerHours = Int(centerTime) / 3600
-                let centerMinutes = Int(centerTime) / 60 % 60
-                let centerSeconds = Int(centerTime) % 60
-                let centerTimeFormatted = String(format: "%02d:%02d:%02d", centerHours, centerMinutes, centerSeconds)
-                
-                let startHours = Int(startTime) / 3600
-                let startMinutes = Int(startTime) / 60 % 60
-                let startSeconds = Int(startTime) % 60
-                let startTimeFormatted = String(format: "%02d:%02d:%02d", startHours, startMinutes, startSeconds)
-                
-                let endHours = Int(endTime) / 3600
-                let endMinutes = Int(endTime) / 60 % 60
-                let endSeconds = Int(endTime) % 60
-                let endTimeFormatted = String(format: "%02d:%02d:%02d", endHours, endMinutes, endSeconds)
-                
-                print("📖 [AIMagicControlsView] Book changed, loading sentences for bookID=\(bookID.uuidString)")
-                print("📖 [AIMagicControlsView] Center time: \(centerTimeFormatted) (\(centerTime)s)")
-                print("📖 [AIMagicControlsView] Requesting time range: \(startTimeFormatted) (\(startTime)s) - \(endTimeFormatted) (\(endTime)s)")
                 
                 await transcriptionManager.loadSentencesForDisplay(
                     bookID: bookID,
@@ -303,33 +389,10 @@ struct AIMagicControlsView: View {
                     endTime: endTime
                 )
                 
-                print("📖 [AIMagicControlsView] Loaded \(transcriptionManager.transcribedSentences.count) sentences after book change")
+                // Update current sentence after loading
+                updateCurrentSentence(for: centerTime)
                 
                 isLoading = false
-            }
-        }
-    }
-    
-    private func updateHighlight(for newTime: TimeInterval) {
-        guard audioManager.isPlaying,
-              !transcriptionManager.transcribedSentences.isEmpty else {
-            highlightedSentenceID = nil
-            return
-        }
-        
-        if let currentSentence = transcriptionManager.transcribedSentences.first(where: { sentence in
-            newTime >= sentence.startTime && newTime <= sentence.endTime
-        }) {
-            highlightedSentenceID = currentSentence.id
-        } else {
-            if let closestSentence = transcriptionManager.transcribedSentences.min(by: { sentence1, sentence2 in
-                let diff1 = abs(sentence1.startTime - newTime)
-                let diff2 = abs(sentence2.startTime - newTime)
-                return diff1 < diff2
-            }), abs(closestSentence.startTime - newTime) < 2.0 {
-                highlightedSentenceID = closestSentence.id
-            } else {
-                highlightedSentenceID = nil
             }
         }
     }

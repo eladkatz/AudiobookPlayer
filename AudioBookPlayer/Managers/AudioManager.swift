@@ -714,7 +714,9 @@ class AudioManager: NSObject, ObservableObject {
         let minutes = Int(time) / 60 % 60
         let seconds = Int(time) % 60
         let seekTimeFormatted = String(format: "%02d:%02d:%02d", hours, minutes, seconds)
-        print("🎯 [AudioManager] USER SEEKED to location: \(seekTimeFormatted) (\(time)s)")
+        let seekMsg = "🎯 [AudioManager] USER SEEKED to location: \(seekTimeFormatted) (\(time)s)"
+        print(seekMsg)
+        FileLogger.shared.log(seekMsg, category: "AudioManager")
         
         let cmTime = CMTime(seconds: time, preferredTimescale: 600)
         let wasPlaying = isPlaying
@@ -726,7 +728,9 @@ class AudioManager: NSObject, ObservableObject {
         
         player.seek(to: cmTime, completionHandler: { [weak self] completed in
             guard let self = self, completed else {
-                print("⚠️ [AudioManager] Seek completed with error or was cancelled")
+                let seekErrorMsg = "⚠️ [AudioManager] Seek completed with error or was cancelled"
+                print(seekErrorMsg)
+                FileLogger.shared.log(seekErrorMsg, category: "AudioManager")
                 completion?()
                 return
             }
@@ -736,7 +740,9 @@ class AudioManager: NSObject, ObservableObject {
                 self.updateCurrentChapterIndex()
                 self.updateNowPlayingInfo() // Update Now Playing after seek
                 
-                print("✅ [AudioManager] Seek completed successfully to \(seekTimeFormatted)")
+                let seekSuccessMsg = "✅ [AudioManager] Seek completed successfully to \(seekTimeFormatted)"
+                print(seekSuccessMsg)
+                FileLogger.shared.log(seekSuccessMsg, category: "AudioManager")
                 
                 // Resume playback if it was playing before seek
                 if wasPlaying && self.isPlayerReady {
@@ -965,8 +971,11 @@ class AudioManager: NSObject, ObservableObject {
                 return
             }
             
-            // All transcription API calls must be inside #available check
-            guard #available(iOS 26.0, *) else {
+            // Check if transcription is enabled
+            guard TranscriptionSettings.shared.isEnabled else {
+                let disabledMsg = "🚫 [AudioManager] Transcription is disabled - skipping transcription check after seek"
+                print(disabledMsg)
+                FileLogger.shared.log(disabledMsg, category: "AudioManager")
                 return
             }
             
@@ -981,13 +990,17 @@ class AudioManager: NSObject, ObservableObject {
             let chunkSize: TimeInterval = 120.0 // 2 minutes
             
             // Check if transcription is needed at this seek position
-            print("🔍 [AudioManager] Calling checkIfTranscriptionNeededAtSeekPosition for seekTime=\(seekTime)s")
+            let checkMsg = "🔍 [AudioManager] Calling checkIfTranscriptionNeededAtSeekPosition for seekTime=\(seekTime)s"
+            print(checkMsg)
+            FileLogger.shared.log(checkMsg, category: "AudioManager")
             if let chunkStartTime = await TranscriptionManager.shared.checkIfTranscriptionNeededAtSeekPosition(
                 bookID: bookID,
                 seekTime: seekTime,
                 chunkSize: chunkSize
             ) {
-                print("✅ [AudioManager] Transcription needed, chunkStartTime=\(chunkStartTime)s, enqueueing task")
+                let neededMsg = "✅ [AudioManager] Transcription needed, chunkStartTime=\(chunkStartTime)s, enqueueing task"
+                print(neededMsg)
+                FileLogger.shared.log(neededMsg, category: "AudioManager")
                 // Enqueue high-priority task for immediate transcription
                 let task = TranscriptionQueue.TranscriptionTask(
                     bookID: bookID,
@@ -995,9 +1008,13 @@ class AudioManager: NSObject, ObservableObject {
                     priority: .high
                 )
                 await TranscriptionQueue.shared.enqueue(task)
-                print("✅ [AudioManager] Transcription task enqueued successfully")
+                let enqueuedMsg = "✅ [AudioManager] Transcription task enqueued successfully"
+                print(enqueuedMsg)
+                FileLogger.shared.log(enqueuedMsg, category: "AudioManager")
             } else {
-                print("ℹ️ [AudioManager] Transcription not needed at seekTime=\(seekTime)s (already covered)")
+                let notNeededMsg = "ℹ️ [AudioManager] Transcription not needed at seekTime=\(seekTime)s (already covered)"
+                print(notNeededMsg)
+                FileLogger.shared.log(notNeededMsg, category: "AudioManager")
             }
         }
     }

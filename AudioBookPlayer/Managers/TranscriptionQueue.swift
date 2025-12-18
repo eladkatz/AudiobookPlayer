@@ -36,6 +36,20 @@ actor TranscriptionQueue {
     private let maxConcurrentTasks = 5
     private var processingTask: Task<Void, Never>?
     
+    // MARK: - Debug Access
+    
+    func getQueuedTasks() -> [TranscriptionTask] {
+        queuedTasks
+    }
+    
+    func getRunningTasks() -> [TranscriptionTask] {
+        Array(runningTasks.values)
+    }
+    
+    func getQueueStatus() -> (queued: Int, running: Int, maxConcurrent: Int) {
+        (queued: queuedTasks.count, running: runningTasks.count, maxConcurrent: maxConcurrentTasks)
+    }
+    
     private init() {
         // Start processing - use Task.detached to avoid actor isolation issues
         Task.detached {
@@ -56,6 +70,14 @@ actor TranscriptionQueue {
     // MARK: - Queue Management
     
     func enqueue(_ task: TranscriptionTask) {
+        // Check if transcription is enabled
+        guard TranscriptionSettings.shared.isEnabled else {
+            let disabledMsg = "🚫 [TranscriptionQueue] Transcription is disabled - skipping enqueue for task: bookID=\(task.bookID.uuidString), startTime=\(task.startTime)s"
+            print(disabledMsg)
+            FileLogger.shared.log(disabledMsg, category: "TranscriptionQueue")
+            return
+        }
+        
         let hours = Int(task.startTime) / 3600
         let minutes = Int(task.startTime) / 60 % 60
         let seconds = Int(task.startTime) % 60
@@ -77,26 +99,51 @@ actor TranscriptionQueue {
                 }
                 return task1.createdAt < task2.createdAt
             }
-            print("📋 [TranscriptionQueue] ENQUEUED transcription task: bookID=\(task.bookID.uuidString), startTime=\(startTimeFormatted) (\(task.startTime)s), priority=\(task.priority), taskID=\(task.id.uuidString)")
-            print("📋 [TranscriptionQueue] Queue now has \(queuedTasks.count) queued tasks, \(runningTasks.count) running tasks")
+            let enqueueMsg1 = "📋 [TranscriptionQueue] ENQUEUED transcription task: bookID=\(task.bookID.uuidString), startTime=\(startTimeFormatted) (\(task.startTime)s), priority=\(task.priority), taskID=\(task.id.uuidString)"
+            let enqueueMsg2 = "📋 [TranscriptionQueue] Queue now has \(queuedTasks.count) queued tasks, \(runningTasks.count) running tasks"
+            print(enqueueMsg1)
+            print(enqueueMsg2)
+            FileLogger.shared.log(enqueueMsg1, category: "TranscriptionQueue")
+            FileLogger.shared.log(enqueueMsg2, category: "TranscriptionQueue")
         } else {
-            print("⚠️ [TranscriptionQueue] Task already exists (queued or running), skipping: bookID=\(task.bookID.uuidString), startTime=\(startTimeFormatted) (\(task.startTime)s)")
+            let skipMsg = "⚠️ [TranscriptionQueue] Task already exists (queued or running), skipping: bookID=\(task.bookID.uuidString), startTime=\(startTimeFormatted) (\(task.startTime)s)"
+            print(skipMsg)
+            FileLogger.shared.log(skipMsg, category: "TranscriptionQueue")
         }
     }
     
     func cancel(for bookID: UUID) {
         queuedTasks.removeAll { $0.bookID == bookID }
         // Note: We don't cancel running tasks - let them finish
-        print("📋 [TranscriptionQueue] Cancelled queued tasks for bookID=\(bookID.uuidString)")
+        let cancelMsg = "📋 [TranscriptionQueue] Cancelled queued tasks for bookID=\(bookID.uuidString)"
+        print(cancelMsg)
+        FileLogger.shared.log(cancelMsg, category: "TranscriptionQueue")
+    }
+    
+    func cancelAll() {
+        let queuedCount = queuedTasks.count
+        let runningCount = runningTasks.count
+        queuedTasks.removeAll()
+        // Note: We don't cancel running tasks - let them finish
+        let cancelMsg = "📋 [TranscriptionQueue] Cancelled all queued tasks (\(queuedCount) queued, \(runningCount) running)"
+        print(cancelMsg)
+        FileLogger.shared.log(cancelMsg, category: "TranscriptionQueue")
     }
     
     // MARK: - Task Processing
     
     
     private func processNext() async {
+        // Check if transcription is enabled
+        guard TranscriptionSettings.shared.isEnabled else {
+            return
+        }
+        
         // Don't process if at max capacity
         guard runningTasks.count < maxConcurrentTasks else {
-            print("⏸️ [TranscriptionQueue] Cannot process next task - at max capacity (\(runningTasks.count)/\(maxConcurrentTasks) running)")
+            let capacityMsg = "⏸️ [TranscriptionQueue] Cannot process next task - at max capacity (\(runningTasks.count)/\(maxConcurrentTasks) running)"
+            print(capacityMsg)
+            FileLogger.shared.log(capacityMsg, category: "TranscriptionQueue")
             return
         }
         
@@ -113,7 +160,9 @@ actor TranscriptionQueue {
         if runningTasks.count >= maxConcurrentTasks {
             // Find oldest running task
             if let oldestTask = runningTasks.values.min(by: { $0.createdAt < $1.createdAt }) {
-                print("⚠️ [TranscriptionQueue] Max tasks reached, cancelling oldest: \(oldestTask.id.uuidString)")
+                let cancelOldestMsg = "⚠️ [TranscriptionQueue] Max tasks reached, cancelling oldest: \(oldestTask.id.uuidString)"
+                print(cancelOldestMsg)
+                FileLogger.shared.log(cancelOldestMsg, category: "TranscriptionQueue")
                 runningTasks.removeValue(forKey: oldestTask.id)
                 // Note: Actual cancellation of transcription would need to be handled by TranscriptionManager
             }
@@ -127,8 +176,12 @@ actor TranscriptionQueue {
         let seconds = Int(nextTask.startTime) % 60
         let startTimeFormatted = String(format: "%02d:%02d:%02d", hours, minutes, seconds)
         
-        print("▶️ [TranscriptionQueue] STARTING transcription task: taskID=\(nextTask.id.uuidString), bookID=\(nextTask.bookID.uuidString), startTime=\(startTimeFormatted) (\(nextTask.startTime)s), priority=\(nextTask.priority)")
-        print("▶️ [TranscriptionQueue] Queue status: \(queuedTasks.count) queued, \(runningTasks.count) running")
+        let startMsg1 = "▶️ [TranscriptionQueue] STARTING transcription task: taskID=\(nextTask.id.uuidString), bookID=\(nextTask.bookID.uuidString), startTime=\(startTimeFormatted) (\(nextTask.startTime)s), priority=\(nextTask.priority)"
+        let startMsg2 = "▶️ [TranscriptionQueue] Queue status: \(queuedTasks.count) queued, \(runningTasks.count) running"
+        print(startMsg1)
+        print(startMsg2)
+        FileLogger.shared.log(startMsg1, category: "TranscriptionQueue")
+        FileLogger.shared.log(startMsg2, category: "TranscriptionQueue")
         
         // Execute transcription task
         Task {
@@ -184,6 +237,14 @@ actor TranscriptionQueue {
     // MARK: - Gap Detection
     
     func detectTranscriptionGaps(books: [Book], currentBookID: UUID?) async {
+        // Check if transcription is enabled
+        guard TranscriptionSettings.shared.isEnabled else {
+            let disabledMsg = "🚫 [TranscriptionQueue] Transcription is disabled - skipping gap detection"
+            print(disabledMsg)
+            FileLogger.shared.log(disabledMsg, category: "TranscriptionQueue")
+            return
+        }
+        
         let startTime = Date()
         print("🔍 [TranscriptionQueue] Starting gap detection for \(books.count) books, currentBookID=\(currentBookID?.uuidString ?? "nil")")
         

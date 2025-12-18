@@ -6,7 +6,9 @@ struct PlayerView: View {
     @ObservedObject private var coverManager = CoverImageManager.shared
     @State private var showSpeedPicker = false
     @State private var showSleepTimerPicker = false
-    @State private var showAIMagicControls = false
+    @State private var showChaptersList = false
+    @State private var showDebugDashboard = false
+    @ObservedObject private var transcriptionSettings = TranscriptionSettings.shared
     
     var body: some View {
         Group {
@@ -20,12 +22,13 @@ struct PlayerView: View {
     
     private var playerContent: some View {
         GeometryReader { geometry in
-            ScrollView {
-                VStack(spacing: 24) {
-                    // Error Message
-                    if let error = audioManager.playbackError {
-                        errorSection(error)
-                    }
+            ZStack(alignment: .topTrailing) {
+                ScrollView {
+                    VStack(spacing: 24) {
+                        // Error Message
+                        if let error = audioManager.playbackError {
+                            errorSection(error)
+                        }
                     
                     // Cover Art Area
                     coverArtSection(availableWidth: geometry.size.width)
@@ -42,38 +45,49 @@ struct PlayerView: View {
                     // Control Buttons
                     controlButtonsSection(availableWidth: geometry.size.width)
                     
-                    // Chapter Navigation
-                    chapterNavigationSection(availableWidth: geometry.size.width)
+                    // AI Magic View (Transcription)
+                    aiMagicSection
                     
                     // Bottom padding for scroll and tab bar
                     Spacer()
                         .frame(height: 24)
+                    }
+                    .padding(.horizontal, 16)
+                    .frame(width: geometry.size.width)
                 }
-                .padding(.horizontal, 16)
-                .frame(width: geometry.size.width)
+                .background(Color(.systemBackground))
+                
+                // Control buttons (floating top right)
+                VStack(spacing: 8) {
+                    // Transcription toggle button
+                    transcriptionToggleButton
+                    
+                    // Debug Button
+                    debugButton
+                }
+                .padding(.top, 8)
+                .padding(.trailing, 8)
             }
-            .background(Color(.systemBackground))
-        }
-        .sheet(isPresented: $showAIMagicControls) {
-            if #available(iOS 26.0, *) {
-                AIMagicControlsView()
-                    .environmentObject(appState)
-            } else {
-                Text("AI Magic features require iOS 26.0 or later")
-                    .padding()
+            .sheet(isPresented: $showChaptersList) {
+                ChaptersListView()
             }
-        }
-        .onChange(of: appState.currentBook?.id) { oldID, newID in
-            // Only load book when it actually changes, not on every view appearance
-            if let book = appState.currentBook, newID != oldID {
-                audioManager.loadBook(book)
+            .sheet(isPresented: $showDebugDashboard) {
+                if #available(iOS 26.0, *) {
+                    TranscriptionDebugDashboardView()
+                }
             }
-        }
-        .onAppear {
-            // Only load if no book is currently loaded (initial load)
-            // Check duration == 0 to determine if no book is loaded
-            if let book = appState.currentBook, audioManager.duration == 0 {
-                audioManager.loadBook(book)
+            .onChange(of: appState.currentBook?.id) { oldID, newID in
+                // Only load book when it actually changes, not on every view appearance
+                if let book = appState.currentBook, newID != oldID {
+                    audioManager.loadBook(book)
+                }
+            }
+            .onAppear {
+                // Only load if no book is currently loaded (initial load)
+                // Check duration == 0 to determine if no book is loaded
+                if let book = appState.currentBook, audioManager.duration == 0 {
+                    audioManager.loadBook(book)
+                }
             }
         }
     }
@@ -296,8 +310,8 @@ struct PlayerView: View {
                     // Playback Speed Button
                     speedButton
                     
-                    // AI Magic Button
-                    aiMagicButton
+                    // Chapters Button
+                    chaptersButton
                     
                     Spacer()
                     
@@ -412,11 +426,11 @@ struct PlayerView: View {
         }
     }
     
-    private var aiMagicButton: some View {
+    private var chaptersButton: some View {
         Button(action: {
-            showAIMagicControls = true
+            showChaptersList = true
         }) {
-            Text("✨")
+            Image(systemName: "list.bullet")
                 .font(.system(size: 16, weight: .medium))
                 .foregroundColor(.primary)
                 .padding(.horizontal, 10)
@@ -426,68 +440,51 @@ struct PlayerView: View {
         }
     }
     
-    // MARK: - Chapter Navigation Section
-    private func chapterNavigationSection(availableWidth: CGFloat) -> some View {
-        let isCompact = availableWidth < 600 // iPhone vs iPad threshold
-        
-        return VStack(spacing: 12) {
-            if !audioManager.chapters.isEmpty {
-                HStack {
-                    Text("Chapters")
-                        .font(.headline)
-                        .foregroundColor(.secondary)
-                    
-                    Spacer()
-                    
-                    // On iPhone, show Speed, Sleep Timer, and AI Magic buttons here
-                    if isCompact {
-                        HStack(spacing: 8) {
-                            speedButton
-                            sleepTimerButton
-                            aiMagicButton
-                        }
-                    }
-                }
-                .padding(.horizontal)
-                
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 8) {
-                        ForEach(Array(audioManager.chapters.enumerated()), id: \.element.id) { index, chapter in
-                            Button(action: {
-                                audioManager.seek(to: chapter.startTime)
-                            }) {
-                                HStack {
-                                    VStack(alignment: .leading, spacing: 4) {
-                                        Text(chapter.title)
-                                            .font(.subheadline)
-                                            .foregroundColor(.primary)
-                                        Text(formatTime(chapter.startTime))
-                                            .font(.caption)
-                                            .foregroundColor(.secondary)
-                                    }
-                                    
-                                    Spacer()
-                                    
-                                    if index == audioManager.currentChapterIndex {
-                                        Image(systemName: "checkmark.circle.fill")
-                                            .foregroundColor(.blue)
-                                    }
-                                }
-                                .padding()
-                                .background(
-                                    index == audioManager.currentChapterIndex
-                                        ? Color.blue.opacity(0.1)
-                                        : Color(.systemGray6)
-                                )
-                                .cornerRadius(8)
-                            }
-                        }
-                    }
-                    .padding(.horizontal)
-                }
+    // MARK: - Debug Button
+    
+    @ViewBuilder
+    private var debugButton: some View {
+        if #available(iOS 26.0, *) {
+            Button(action: {
+                showDebugDashboard = true
+            }) {
+                Image(systemName: "gearshape.fill")
+                    .font(.system(size: 18))
+                    .foregroundColor(.secondary)
+                    .padding(10)
+                    .background(Color(.systemGray6))
+                    .clipShape(Circle())
             }
         }
     }
+    
+    // MARK: - Transcription Toggle Button
+    
+    @ViewBuilder
+    private var transcriptionToggleButton: some View {
+        Button(action: {
+            transcriptionSettings.isEnabled.toggle()
+        }) {
+            Image(systemName: transcriptionSettings.isEnabled ? "waveform" : "waveform.slash")
+                .font(.system(size: 18))
+                .foregroundColor(transcriptionSettings.isEnabled ? .green : .red)
+                .padding(10)
+                .background(Color(.systemGray6))
+                .clipShape(Circle())
+        }
+    }
+    
+    // MARK: - AI Magic Section
+    
+    @ViewBuilder
+    private var aiMagicSection: some View {
+        if #available(iOS 26.0, *) {
+            AIMagicControlsView()
+                .environmentObject(appState)
+        }
+        // If iOS < 26.0, show nothing (as requested)
+    }
+    
     
     // MARK: - Helper Methods
     private func formatTime(_ time: TimeInterval) -> String {
