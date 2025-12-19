@@ -2,7 +2,15 @@ import SwiftUI
 
 struct ChaptersListView: View {
     @Environment(\.dismiss) var dismiss
+    @EnvironmentObject var appState: AppState
     @ObservedObject var audioManager = AudioManager.shared
+    @State private var transcriptionStatus: [UUID: ChapterTranscriptionStatus] = [:]
+    
+    enum ChapterTranscriptionStatus {
+        case transcribed
+        case transcribing
+        case notTranscribed
+    }
     
     var body: some View {
         NavigationView {
@@ -38,9 +46,17 @@ struct ChaptersListView: View {
                                     
                                     Spacer()
                                     
+                                    HStack(spacing: 8) {
+                                        // Transcription status indicator
+                                        if #available(iOS 26.0, *) {
+                                            transcriptionStatusIcon(for: chapter.id)
+                                        }
+                                        
+                                        // Current chapter indicator
                                     if index == audioManager.currentChapterIndex {
                                         Image(systemName: "checkmark.circle.fill")
                                             .foregroundColor(.blue)
+                                        }
                                     }
                                 }
                                 .padding()
@@ -65,6 +81,71 @@ struct ChaptersListView: View {
                     }
                 }
             }
+            .onAppear {
+                if #available(iOS 26.0, *) {
+                    loadTranscriptionStatus()
+                }
+            }
+            .onChange(of: audioManager.chapters.count) { _, _ in
+                if #available(iOS 26.0, *) {
+                    loadTranscriptionStatus()
+                }
+            }
+        }
+    }
+    
+    @available(iOS 26.0, *)
+    @ViewBuilder
+    private func transcriptionStatusIcon(for chapterID: UUID) -> some View {
+        let status = transcriptionStatus[chapterID] ?? .notTranscribed
+        
+        switch status {
+        case .transcribed:
+            Image(systemName: "waveform")
+                .font(.caption)
+                .foregroundColor(.green)
+        case .transcribing:
+            ProgressView()
+                .scaleEffect(0.7)
+        case .notTranscribed:
+            Image(systemName: "waveform.slash")
+                .font(.caption)
+                .foregroundColor(.gray)
+        }
+    }
+    
+    @available(iOS 26.0, *)
+    private func loadTranscriptionStatus() {
+        guard let book = appState.currentBook else {
+            return
+        }
+        
+        Task {
+            var newStatus: [UUID: ChapterTranscriptionStatus] = [:]
+            
+            for chapter in audioManager.chapters {
+                // Check if transcribed
+                let isTranscribed = await TranscriptionDatabase.shared.isChapterTranscribed(
+                    bookID: book.id,
+                    chapterID: chapter.id
+                )
+                
+                if isTranscribed {
+                    newStatus[chapter.id] = .transcribed
+                } else {
+                    // Check if currently transcribing
+                    let isTranscribing = await TranscriptionDatabase.shared.isChapterTranscribing(
+                        bookID: book.id,
+                        chapterID: chapter.id
+                    )
+                    
+                    newStatus[chapter.id] = isTranscribing ? .transcribing : .notTranscribed
+                }
+            }
+            
+            await MainActor.run {
+                transcriptionStatus = newStatus
+            }
         }
     }
     
@@ -80,5 +161,7 @@ struct ChaptersListView: View {
         }
     }
 }
+
+
 
 

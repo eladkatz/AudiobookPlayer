@@ -243,12 +243,10 @@ struct TranscriptionDebugDashboardView: View {
     
     private func refreshData() {
         Task {
-            if #available(iOS 26.0, *) {
                 let queue = TranscriptionQueue.shared
                 queuedTasks = await queue.getQueuedTasks()
                 runningTasks = await queue.getRunningTasks()
                 queueStatus = await queue.getQueueStatus()
-            }
         }
     }
     

@@ -12,6 +12,8 @@ class TranscriptionManager: ObservableObject {
     @Published var transcribedSentences: [TranscribedSentence] = []
     @Published var errorMessage: String?
     @Published var currentStatus: String = ""
+    @Published var currentSentenceCount: Int = 0 // For progress monitoring
+    @Published var currentTranscribingChapterID: UUID? // Track which chapter is being transcribed
     
     private let database = TranscriptionDatabase.shared
     private var analyzer: SpeechAnalyzer?
@@ -23,13 +25,6 @@ class TranscriptionManager: ObservableObject {
     
     private init() {}
     
-    // MARK: - Main Transcription Method
-    
-    func transcribeNextTwoMinutes(book: Book) async {
-        // Phase 1: Refactored to call transcribeChunk
-        let segmentStartTime = await database.getNextTranscriptionStartTime(bookID: book.id)
-        await transcribeChunk(book: book, startTime: segmentStartTime)
-    }
     
     private func formatTime(_ time: TimeInterval) -> String {
         let minutes = Int(time) / 60
@@ -371,7 +366,10 @@ class TranscriptionManager: ObservableObject {
                         let endTime = sentenceEndTime > 0 ? sentenceEndTime : startTime
                         
                         if !sentenceText.isEmpty {
-                            debugLog("✅ Completed sentence #\(sentences.count + 1): '\(sentenceText.prefix(50))...' [\(startTime)s - \(endTime)s]")
+                            // Capture count before appending to avoid concurrency issues
+                            let currentCount = sentences.count
+                            let sentenceNumber = currentCount + 1
+                            debugLog("✅ Completed sentence #\(sentenceNumber): '\(sentenceText.prefix(50))...' [\(startTime)s - \(endTime)s]")
                             
                             // Sentence complete - add to results
                             let transcribedSentence = TranscribedSentence(
@@ -389,7 +387,13 @@ class TranscriptionManager: ObservableObject {
                             }
                             
                             sentences.append(transcribedSentence)
-                            debugLog("   Sentence added, total count: \(sentences.count), sentence.id=\(transcribedSentence.id.uuidString)")
+                            let sentenceCount = sentences.count // Capture count before MainActor
+                            debugLog("   Sentence added, total count: \(sentenceCount), sentence.id=\(transcribedSentence.id.uuidString)")
+                            
+                            // Update sentence count for progress monitoring
+                            await MainActor.run {
+                                currentSentenceCount = sentenceCount
+                            }
                         } else {
                             debugLog("⚠️ Empty sentence detected, skipping")
                         }
@@ -526,12 +530,12 @@ class TranscriptionManager: ObservableObject {
     
 
     
-    // MARK: - Phase 1: Refactored Transcription Method
+    // MARK: - Chapter-Based Transcription Method
     
-    func transcribeChunk(book: Book, startTime: TimeInterval) async {
+    func transcribeChapter(book: Book, chapterID: UUID, startTime: TimeInterval, endTime: TimeInterval) async {
         // Check if transcription is enabled
         guard TranscriptionSettings.shared.isEnabled else {
-            let disabledMsg = "🚫 [TranscriptionManager] Transcription is disabled - skipping transcribeChunk for book: '\(book.title)', startTime: \(startTime)s"
+            let disabledMsg = "🚫 [TranscriptionManager] Transcription is disabled - skipping transcribeChapter for book: '\(book.title)', chapterID: \(chapterID.uuidString)"
             print(disabledMsg)
             FileLogger.shared.log(disabledMsg, category: "TranscriptionManager")
             return
@@ -539,27 +543,27 @@ class TranscriptionManager: ObservableObject {
         
         // Check for cancellation
         if Task.isCancelled {
-            let cancelMsg = "🚫 [TranscriptionManager] Transcription task cancelled before starting: book: '\(book.title)', startTime: \(startTime)s"
+            let cancelMsg = "🚫 [TranscriptionManager] Transcription task cancelled before starting: book: '\(book.title)', chapterID: \(chapterID.uuidString)"
             print(cancelMsg)
             FileLogger.shared.log(cancelMsg, category: "TranscriptionManager")
             return
         }
         
-        let hours = Int(startTime) / 3600
-        let minutes = Int(startTime) / 60 % 60
-        let seconds = Int(startTime) % 60
-        let startTimeFormatted = String(format: "%02d:%02d:%02d", hours, minutes, seconds)
-        
-        let startMsg = "🚀 [TranscriptionManager] TRANSCRIPTION TASK STARTED at start time index: \(startTimeFormatted) (\(startTime)s)"
-        let bookMsg = "🚀 [TranscriptionManager] Book: '\(book.title)' (ID: \(book.id.uuidString))"
-        print(startMsg)
-        print(bookMsg)
-        FileLogger.shared.log(startMsg, category: "TranscriptionManager")
-        FileLogger.shared.log(bookMsg, category: "TranscriptionManager")
-        
         let segmentStartTime = startTime
-        let segmentDuration: TimeInterval = 2 * 60 // 2 minutes
-        let segmentEndTime = segmentStartTime + segmentDuration
+        let segmentDuration = endTime - startTime
+        let segmentEndTime = endTime
+        
+        let startMsg = "🚀 [TranscriptionManager] CHAPTER TRANSCRIPTION STARTED: book='\(book.title)', chapterID=\(chapterID.uuidString), range=\(startTime)s-\(endTime)s"
+        print(startMsg)
+        FileLogger.shared.log(startMsg, category: "TranscriptionManager")
+        
+        // Mark chapter as transcribing
+        await database.markChapterTranscribing(
+            bookID: book.id,
+            chapterID: chapterID,
+            startTime: segmentStartTime,
+            endTime: segmentEndTime
+        )
         
         // Track instance start
         let instanceID = TranscriptionInstanceTracker.shared.startInstance(
@@ -572,24 +576,27 @@ class TranscriptionManager: ObservableObject {
             progress = 0.0
             errorMessage = nil
             currentStatus = "Preparing transcription..."
+            currentSentenceCount = 0 // Reset sentence count
+            currentTranscribingChapterID = chapterID // Track which chapter is being transcribed
         }
         
         defer {
             Task { @MainActor in
                 isTranscribing = false
+                currentSentenceCount = 0 // Reset sentence count
+                currentTranscribingChapterID = nil // Clear transcribing chapter
                 cleanup()
             }
         }
         
         do {
-            
             let startTimeFormatted = formatTime(segmentStartTime)
             let endTimeFormatted = formatTime(segmentEndTime)
             
             await MainActor.run {
-                currentStatus = "Transcribing \(startTimeFormatted)-\(endTimeFormatted)..."
+                currentStatus = "Transcribing chapter \(startTimeFormatted)-\(endTimeFormatted)..."
             }
-            debugLog("🎯 Starting transcription chunk: \(startTimeFormatted) - \(endTimeFormatted)")
+            debugLog("🎯 Starting chapter transcription: \(startTimeFormatted) - \(endTimeFormatted)")
             
             // Get actual file URL
             let actualURL = try await getActualFileURL(for: book)
@@ -634,37 +641,20 @@ class TranscriptionManager: ObservableObject {
             
             // Save to database
             await MainActor.run {
-                currentStatus = "Inserting to database..."
+                currentStatus = "Saving to database..."
             }
-            let chunk = TranscriptionChunk(
+            try await database.saveChapterTranscription(
                 bookID: book.id,
-                startTime: segmentStartTime,
-                endTime: segmentEndTime,
-                sentences: sentences,
-                transcribedAt: Date(),
-                isComplete: true
+                chapterID: chapterID,
+                sentences: sentences
             )
-            try await database.insertChunk(chunk)
             
-            let completionHours = Int(segmentStartTime) / 3600
-            let completionMinutes = Int(segmentStartTime) / 60 % 60
-            let completionSeconds = Int(segmentStartTime) % 60
-            let completionStartTimeFormatted = String(format: "%02d:%02d:%02d", completionHours, completionMinutes, completionSeconds)
-            
-            let completionEndHours = Int(segmentEndTime) / 3600
-            let completionEndMinutes = Int(segmentEndTime) / 60 % 60
-            let completionEndSeconds = Int(segmentEndTime) % 60
-            let completionEndTimeFormatted = String(format: "%02d:%02d:%02d", completionEndHours, completionEndMinutes, completionEndSeconds)
-            
-            let completeMsg1 = "✅ [TranscriptionManager] TRANSCRIPTION TASK COMPLETED at start time index: \(completionStartTimeFormatted) (\(segmentStartTime)s)"
-            let completeMsg2 = "✅ [TranscriptionManager] Contained \(sentences.count) sentences"
-            let completeMsg3 = "✅ [TranscriptionManager] Time range: \(completionStartTimeFormatted) - \(completionEndTimeFormatted) (ending at \(segmentEndTime)s)"
+            let completeMsg1 = "✅ [TranscriptionManager] CHAPTER TRANSCRIPTION COMPLETED: chapterID=\(chapterID.uuidString), \(sentences.count) sentences"
+            let completeMsg2 = "✅ [TranscriptionManager] Time range: \(startTimeFormatted) - \(endTimeFormatted)"
             print(completeMsg1)
             print(completeMsg2)
-            print(completeMsg3)
             FileLogger.shared.log(completeMsg1, category: "TranscriptionManager")
             FileLogger.shared.log(completeMsg2, category: "TranscriptionManager")
-            FileLogger.shared.log(completeMsg3, category: "TranscriptionManager")
             
             // Track instance completion
             TranscriptionInstanceTracker.shared.completeInstance(id: instanceID, sentenceCount: sentences.count)
@@ -677,12 +667,7 @@ class TranscriptionManager: ObservableObject {
         } catch {
             // Handle cancellation error
             if error is CancellationError || Task.isCancelled {
-                let hours = Int(startTime) / 3600
-                let minutes = Int(startTime) / 60 % 60
-                let seconds = Int(startTime) % 60
-                let startTimeFormatted = String(format: "%02d:%02d:%02d", hours, minutes, seconds)
-                
-                let cancelMsg1 = "🚫 [TranscriptionManager] TRANSCRIPTION TASK CANCELLED at start time index: \(startTimeFormatted) (\(startTime)s)"
+                let cancelMsg1 = "🚫 [TranscriptionManager] CHAPTER TRANSCRIPTION CANCELLED: chapterID=\(chapterID.uuidString)"
                 let cancelMsg2 = "🚫 [TranscriptionManager] Cancellation error: \(error.localizedDescription)"
                 print(cancelMsg1)
                 print(cancelMsg2)
@@ -699,12 +684,7 @@ class TranscriptionManager: ObservableObject {
                 return
             }
             
-            let hours = Int(startTime) / 3600
-            let minutes = Int(startTime) / 60 % 60
-            let seconds = Int(startTime) % 60
-            let startTimeFormatted = String(format: "%02d:%02d:%02d", hours, minutes, seconds)
-            
-            let failMsg1 = "❌ [TranscriptionManager] TRANSCRIPTION TASK FAILED at start time index: \(startTimeFormatted) (\(startTime)s)"
+            let failMsg1 = "❌ [TranscriptionManager] CHAPTER TRANSCRIPTION FAILED: chapterID=\(chapterID.uuidString)"
             let failMsg2 = "❌ [TranscriptionManager] Error: \(error.localizedDescription)"
             print(failMsg1)
             print(failMsg2)
@@ -719,6 +699,10 @@ class TranscriptionManager: ObservableObject {
                 currentStatus = "Error: \(error.localizedDescription)"
             }
         }
+    }
+    
+    func loadSentencesForChapter(bookID: UUID, chapterID: UUID) async -> [TranscribedSentence] {
+        return await database.loadSentencesForChapter(bookID: bookID, chapterID: chapterID)
     }
     
     // MARK: - Phase 4: Compatibility Check
@@ -771,57 +755,6 @@ class TranscriptionManager: ObservableObject {
         return await task.value
     }
     
-    // MARK: - Phase 5: Seeking Support
-    
-    func checkIfTranscriptionNeededAtSeekPosition(bookID: UUID, seekTime: TimeInterval, chunkSize: TimeInterval) async -> TimeInterval? {
-        let checkMsg = "🔍 [TranscriptionManager] checkIfTranscriptionNeededAtSeekPosition called: bookID=\(bookID.uuidString), seekTime=\(seekTime)s, chunkSize=\(chunkSize)s"
-        print(checkMsg)
-        FileLogger.shared.log(checkMsg, category: "TranscriptionManager")
-        
-        // First, check if a sentence actually exists at this position
-        let sentenceAtPosition = await database.findSentence(bookID: bookID, atTime: seekTime)
-        
-        if let sentence = sentenceAtPosition {
-            let existsMsg1 = "✅ [TranscriptionManager] Sentence EXISTS at seekTime (\(seekTime)s): '\(sentence.text.prefix(50))...' [\(sentence.startTime)s - \(sentence.endTime)s]"
-            let existsMsg2 = "ℹ️ [TranscriptionManager] Transcription NOT NEEDED - sentence already exists at this position"
-            print(existsMsg1)
-            print(existsMsg2)
-            FileLogger.shared.log(existsMsg1, category: "TranscriptionManager")
-            FileLogger.shared.log(existsMsg2, category: "TranscriptionManager")
-            return nil
-        }
-        
-        // No sentence at this position - check if we need to transcribe
-        let progress = await database.getTranscriptionProgress(bookID: bookID)
-        let threshold = chunkSize / 2.0
-        
-        let noSentenceMsg1 = "🔍 [TranscriptionManager] No sentence found at seekTime (\(seekTime)s)"
-        let noSentenceMsg2 = "🔍 [TranscriptionManager] Current progress=\(progress)s, seekTime=\(seekTime)s, threshold=\(threshold)s, required=\(seekTime + threshold)s"
-        print(noSentenceMsg1)
-        print(noSentenceMsg2)
-        FileLogger.shared.log(noSentenceMsg1, category: "TranscriptionManager")
-        FileLogger.shared.log(noSentenceMsg2, category: "TranscriptionManager")
-        
-        if progress < seekTime + threshold {
-            // Calculate chunk boundary
-            let chunkStartTime = floor(seekTime / chunkSize) * chunkSize
-            let neededMsg = "✅ [TranscriptionManager] Transcription IS NEEDED, chunkStartTime=\(chunkStartTime)s"
-            print(neededMsg)
-            FileLogger.shared.log(neededMsg, category: "TranscriptionManager")
-            return chunkStartTime
-        }
-        
-        // Progress is ahead, but no sentence exists - this means there's a gap
-        // Calculate which chunk contains the seek position and return it
-        let chunkStartTime = floor(seekTime / chunkSize) * chunkSize
-        let gapMsg1 = "⚠️ [TranscriptionManager] GAP DETECTED: Progress (\(progress)s) is ahead but no sentence at seekTime (\(seekTime)s)"
-        let gapMsg2 = "✅ [TranscriptionManager] Transcription IS NEEDED to fill gap, chunkStartTime=\(chunkStartTime)s"
-        print(gapMsg1)
-        print(gapMsg2)
-        FileLogger.shared.log(gapMsg1, category: "TranscriptionManager")
-        FileLogger.shared.log(gapMsg2, category: "TranscriptionManager")
-        return chunkStartTime
-    }
 
     // MARK: - Debug Logging
     
@@ -872,6 +805,7 @@ enum TranscriptionError: LocalizedError {
     case modelDownloadFailed
     case exportFailed(String? = nil)
     case transcriptionCancelled
+    case timeout
     
     var errorDescription: String? {
         switch self {
@@ -889,6 +823,8 @@ enum TranscriptionError: LocalizedError {
             return message ?? "Failed to extract audio segment."
         case .transcriptionCancelled:
             return "Transcription was cancelled."
+        case .timeout:
+            return "Transcription timed out due to lack of progress."
         }
     }
 }

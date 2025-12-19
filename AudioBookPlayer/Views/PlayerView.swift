@@ -70,6 +70,7 @@ struct PlayerView: View {
             }
             .sheet(isPresented: $showChaptersList) {
                 ChaptersListView()
+                    .environmentObject(appState)
             }
             .sheet(isPresented: $showDebugDashboard) {
                 if #available(iOS 26.0, *) {
@@ -247,8 +248,10 @@ struct PlayerView: View {
         let isCompact = availableWidth < 600 // iPhone vs iPad threshold
         
         if isCompact {
-            // iPhone: Only main playback controls
+            // iPhone: Main playback controls with additional buttons below
             return AnyView(
+                VStack(spacing: 16) {
+                    // Main playback controls
                 HStack(spacing: 12) {
                     // Previous Chapter
                     Button(action: {
@@ -300,6 +303,21 @@ struct PlayerView: View {
                             .foregroundColor(audioManager.chapters.isEmpty ? .gray : .primary)
                     }
                     .disabled(audioManager.chapters.isEmpty)
+                    }
+                    
+                    // Additional controls row
+                    HStack(spacing: 12) {
+                        // Playback Speed Button
+                        speedButton
+                        
+                        // Chapters Button
+                        chaptersButton
+                        
+                        Spacer()
+                        
+                        // Sleep Timer Button
+                        sleepTimerButton
+                    }
                 }
                 .padding(.horizontal)
             )

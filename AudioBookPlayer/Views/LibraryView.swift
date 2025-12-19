@@ -472,12 +472,7 @@ struct ImportView: View {
                     dismiss()
                 }
                 
-                // Phase 1: Auto-transcribe first 2 minutes after import
-                if #available(iOS 26.0, *) {
-                    Task.detached(priority: .background) {
-                        await TranscriptionManager.shared.transcribeChunk(book: book, startTime: 0.0)
-                    }
-                }
+                // Transcription will happen automatically when user enters a chapter
             } else {
                 await MainActor.run {
                     isImporting = false
@@ -507,12 +502,7 @@ struct ImportView: View {
                     dismiss()
                 }
                 
-                // Phase 1: Auto-transcribe first 2 minutes after import
-                if #available(iOS 26.0, *) {
-                    Task.detached(priority: .background) {
-                        await TranscriptionManager.shared.transcribeChunk(book: book, startTime: 0.0)
-                    }
-                }
+                // Transcription will happen automatically when user enters a chapter
             } else {
                 await MainActor.run {
                     isImporting = false

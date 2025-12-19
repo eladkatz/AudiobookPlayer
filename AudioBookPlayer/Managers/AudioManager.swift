@@ -35,6 +35,7 @@ class AudioManager: NSObject, ObservableObject {
     private var wasPlayingBeforeInterruption: Bool = false // Track playback state before interruption
     private var nowPlayingUpdateTimer: Timer? // Timer to update Now Playing elapsed time
     private var interruptionResumeTask: Task<Void, Never>? // Task to handle delayed resume after interruption
+    private var chaptersLoaded: Bool = false // Track if chapters have been loaded for current book
     
     private override init() {
         super.init()
@@ -403,6 +404,7 @@ class AudioManager: NSObject, ObservableObject {
         // Track the current book ID and store book reference
         currentBookID = book.id
         currentBook = book
+        chaptersLoaded = false // Reset chapters loaded flag when loading new book
         
         // Remove previous observers
         statusObserver?.invalidate()
@@ -505,18 +507,16 @@ class AudioManager: NSObject, ObservableObject {
                         let savedPosition = book.currentPosition
                         self.player?.seek(to: time, completionHandler: { [weak self] completed in
                             guard let self = self, completed else { return }
-                            // Seek completed - trigger transcription check for initial position
+                            // Seek completed - chapter change will trigger transcription check
                             DispatchQueue.main.async {
                                 self.currentTime = savedPosition
                                 self.updateCurrentChapterIndex()
-                                // Trigger transcription check for initial position
-                                self.checkAndTriggerTranscriptionForSeek(time: savedPosition)
                             }
                         })
                     } else {
-                        // Even at position 0, check if transcription is needed
+                        // Even at position 0, chapter change will trigger transcription check
                         DispatchQueue.main.async {
-                            self.checkAndTriggerTranscriptionForSeek(time: 0)
+                            self.updateCurrentChapterIndex()
                         }
                     }
                     
@@ -626,8 +626,14 @@ class AudioManager: NSObject, ObservableObject {
         }
         
         self.chapters = parsedChapters
+        self.chaptersLoaded = true // Mark chapters as loaded
         self.updateCurrentChapterIndex()
         self.updateNowPlayingInfo() // Update Now Playing with chapter info
+        
+        // Now that chapters are loaded, trigger transcription check if needed
+        if #available(iOS 26.0, *) {
+            ensureCurrentChapterTranscribed()
+        }
     }
     
     // MARK: - Simulated Chapters
@@ -669,16 +675,20 @@ class AudioManager: NSObject, ObservableObject {
             return
         }
         
-        // Trigger transcription check when playback starts/resumes
-        // This catches cases where user resumes playback in untranscribed areas
-        checkAndTriggerTranscriptionForSeek(time: currentTime)
-        
         // Ensure playback speed is set
         player.rate = Float(playbackSpeed)
         player.play()
         // isPlaying will be updated by rate observer
         startNowPlayingUpdates()
         updateNowPlayingInfo()
+        
+        // Trigger transcription check when playback starts (if chapters are loaded)
+        // This handles the case where user switches books and hits play without chapter change
+        if chaptersLoaded {
+            if #available(iOS 26.0, *) {
+                ensureCurrentChapterTranscribed()
+            }
+        }
     }
     
     func pause() {
@@ -749,8 +759,7 @@ class AudioManager: NSObject, ObservableObject {
                     self.play()
                 }
                 
-                // Trigger transcription check for seek position (debounced, non-blocking)
-                self.checkAndTriggerTranscriptionForSeek(time: time)
+                // Chapter change detection will trigger transcription check
                 
                 completion?()
             }
@@ -769,17 +778,24 @@ class AudioManager: NSObject, ObservableObject {
     
     // MARK: - Chapter Navigation
     func nextChapter() {
-        guard currentChapterIndex < chapters.count - 1 else { return }
+        guard !chapters.isEmpty,
+              currentChapterIndex >= 0,
+              currentChapterIndex < chapters.count - 1 else { return }
         let nextChapter = chapters[currentChapterIndex + 1]
         seek(to: nextChapter.startTime)
     }
     
     func previousChapter() {
+        guard !chapters.isEmpty else {
+            seek(to: 0)
+            return
+        }
         guard currentChapterIndex > 0 else {
             // If at first chapter, go to beginning
             seek(to: 0)
             return
         }
+        guard currentChapterIndex < chapters.count else { return }
         let previousChapter = chapters[currentChapterIndex - 1]
         seek(to: previousChapter.startTime)
     }
@@ -910,14 +926,45 @@ class AudioManager: NSObject, ObservableObject {
     
     // MARK: - Chapter Index Update
     private func updateCurrentChapterIndex() {
+        // Guard against empty chapters
+        guard !chapters.isEmpty else {
+            currentChapterIndex = -1
+            return
+        }
+        
         for (index, chapter) in chapters.enumerated() {
             if currentTime >= chapter.startTime && currentTime < chapter.endTime {
                 if currentChapterIndex != index {
                     currentChapterIndex = index
                     updateNowPlayingInfo() // Update Now Playing when chapter changes
+                    
+                    // Trigger transcription check when chapter changes (only if chapters are loaded)
+                    if chaptersLoaded {
+                        if #available(iOS 26.0, *) {
+                            ensureCurrentChapterTranscribed()
+                        }
+                    }
                 }
                 return
             }
+        }
+        
+        // If no chapter found, set to -1 or last chapter if past end
+        if let lastChapter = chapters.last, currentTime >= lastChapter.endTime {
+            let lastIndex = chapters.count - 1
+            if currentChapterIndex != lastIndex {
+                currentChapterIndex = lastIndex
+                updateNowPlayingInfo()
+                
+                // Trigger transcription check when chapter changes (only if chapters are loaded)
+                if chaptersLoaded {
+                    if #available(iOS 26.0, *) {
+                        ensureCurrentChapterTranscribed()
+                    }
+                }
+            }
+        } else {
+            currentChapterIndex = -1
         }
     }
     
@@ -933,94 +980,265 @@ class AudioManager: NSObject, ObservableObject {
         }
     }
     
-    // MARK: - Seek-Triggered Transcription
+    // MARK: - Chapter-Based Transcription
     
-    private var seekTranscriptionTask: Task<Void, Never>?
+    private var chapterTranscriptionTask: Task<Void, Never>?
     
-    func checkAndTriggerTranscriptionForSeek(time: TimeInterval) {
-        // Cancel any existing seek transcription task
-        seekTranscriptionTask?.cancel()
+    @available(iOS 26.0, *)
+    func ensureCurrentChapterTranscribed() {
+        // Cancel previous task
+        chapterTranscriptionTask?.cancel()
         
-        // SpeechAnalyzer and SpeechModule require iOS 26.0+
-        guard #available(iOS 26.0, *) else {
-            print("⚠️ [AudioManager] iOS 26.0+ check FAILED - transcription not available (simulator likely running iOS < 26.0)")
+        guard let book = currentBook,
+              !chapters.isEmpty,
+              currentChapterIndex >= 0,
+              currentChapterIndex < chapters.count else {
+            let debugMsg = "🔍 [AudioManager] ensureCurrentChapterTranscribed: Skipping - book=\(currentBook != nil ? "exists" : "nil"), chapters.count=\(chapters.count), currentChapterIndex=\(currentChapterIndex)"
+            print(debugMsg)
+            FileLogger.shared.log(debugMsg, category: "AudioManager")
             return
         }
         
-        print("✅ [AudioManager] iOS 26.0+ check PASSED - transcription available")
+        let chapter = chapters[currentChapterIndex]
+        let chapterID = chapter.id // Capture for task
         
-        // Get current book info on main thread
-        guard let book = currentBook else {
-            print("⚠️ [AudioManager] No current book available for transcription check")
-            return
-        }
+        let startMsg = "🔍 [AudioManager] ensureCurrentChapterTranscribed: Starting for book='\(book.title)', chapter='\(chapter.title)', chapterID=\(chapterID.uuidString)"
+        print(startMsg)
+        FileLogger.shared.log(startMsg, category: "AudioManager")
         
-        print("✅ [AudioManager] Current book found: '\(book.title)', checking transcription needs")
-        
-        let bookID = book.id
-        let seekTime = time
-        
-        // Create debounced task - wait 1 second after seek before checking
-        // All iOS 26.0+ API calls must be inside this #available block
-        seekTranscriptionTask = Task.detached(priority: .userInitiated) {
-            // Wait 1 second to debounce rapid seeks
-            try? await Task.sleep(nanoseconds: 1_000_000_000) // 1 second
-            
-            // Check if task was cancelled (another seek happened)
-            guard !Task.isCancelled else {
-                return
-            }
-            
+        // Check if already transcribed (async check with 500ms settle delay)
+        chapterTranscriptionTask = Task.detached(priority: .userInitiated) {
             // Check if transcription is enabled
             guard TranscriptionSettings.shared.isEnabled else {
-                let disabledMsg = "🚫 [AudioManager] Transcription is disabled - skipping transcription check after seek"
+                let disabledMsg = "🚫 [AudioManager] ensureCurrentChapterTranscribed: Transcription is disabled - skipping chapterID=\(chapterID.uuidString)"
                 print(disabledMsg)
                 FileLogger.shared.log(disabledMsg, category: "AudioManager")
+            return
+        }
+        
+            // Check if SpeechTranscriber is available
+            guard await TranscriptionManager.shared.isTranscriberAvailable() else {
+                let unavailableMsg = "🚫 [AudioManager] ensureCurrentChapterTranscribed: SpeechTranscriber is not available - skipping chapterID=\(chapterID.uuidString)"
+                print(unavailableMsg)
+                FileLogger.shared.log(unavailableMsg, category: "AudioManager")
                 return
             }
             
-            // Check if SpeechTranscriber is available before proceeding
-            let isAvailable = await TranscriptionManager.shared.isTranscriberAvailable()
-            print("🔍 [AudioManager] SpeechTranscriber availability: \(isAvailable ? "AVAILABLE" : "NOT AVAILABLE")")
-            guard isAvailable else {
-                print("⚠️ [AudioManager] SpeechTranscriber not available on this device/simulator - transcription disabled")
+            // Check if already transcribed
+            let isTranscribed = await TranscriptionDatabase.shared.isChapterTranscribed(
+                bookID: book.id,
+                chapterID: chapterID
+            )
+            
+            if isTranscribed {
+                let alreadyDoneMsg = "✅ [AudioManager] ensureCurrentChapterTranscribed: Chapter already transcribed - chapterID=\(chapterID.uuidString)"
+                print(alreadyDoneMsg)
+                FileLogger.shared.log(alreadyDoneMsg, category: "AudioManager")
+                
+                // Even though this chapter is already transcribed, we should still queue the next chapter
+                // Get current chapter to pass to queueNextChapterIfNeeded
+                let currentChapter: Chapter? = await MainActor.run {
+                    guard self.currentChapterIndex >= 0 && self.currentChapterIndex < self.chapters.count else {
+                        return nil
+                    }
+                    return self.chapters[self.currentChapterIndex]
+                }
+                
+                if let chapter = currentChapter, chapter.id == chapterID {
+                    // Queue next chapter if it exists and isn't transcribed
+                    await self.queueNextChapterIfNeeded(book: book, currentChapter: chapter)
+                }
+                
+                return // Already done
+            }
+            
+            let needsTranscriptionMsg = "⏳ [AudioManager] ensureCurrentChapterTranscribed: Chapter needs transcription - waiting 500ms settle delay - chapterID=\(chapterID.uuidString)"
+            print(needsTranscriptionMsg)
+            FileLogger.shared.log(needsTranscriptionMsg, category: "AudioManager")
+            
+            // Wait 500ms to see if user settles on this chapter
+            try? await Task.sleep(nanoseconds: 500_000_000) // 500ms
+            
+            // Check if still on same chapter
+            guard !Task.isCancelled else {
+                let cancelledMsg = "🚫 [AudioManager] ensureCurrentChapterTranscribed: Task cancelled during settle delay - chapterID=\(chapterID.uuidString)"
+                print(cancelledMsg)
+                FileLogger.shared.log(cancelledMsg, category: "AudioManager")
                 return
             }
             
-            let chunkSize: TimeInterval = 120.0 // 2 minutes
+            // Verify still on same chapter (need to check on main thread)
+            // More robust check: allow for chapter index to be updated during initial load
+            let stillOnSameChapter = await MainActor.run {
+                guard self.currentChapterIndex >= 0,
+                      self.currentChapterIndex < self.chapters.count else {
+                    return false
+                }
+                // Check if the chapter at current index matches, OR if chapters were just loaded
+                // and the current chapter index points to a chapter with the same ID
+                let currentChapter = self.chapters[self.currentChapterIndex]
+                return currentChapter.id == chapterID
+            }
             
-            // Check if transcription is needed at this seek position
-            let checkMsg = "🔍 [AudioManager] Calling checkIfTranscriptionNeededAtSeekPosition for seekTime=\(seekTime)s"
-            print(checkMsg)
-            FileLogger.shared.log(checkMsg, category: "AudioManager")
-            if let chunkStartTime = await TranscriptionManager.shared.checkIfTranscriptionNeededAtSeekPosition(
-                bookID: bookID,
-                seekTime: seekTime,
-                chunkSize: chunkSize
-            ) {
-                let neededMsg = "✅ [AudioManager] Transcription needed, chunkStartTime=\(chunkStartTime)s, enqueueing task"
-                print(neededMsg)
-                FileLogger.shared.log(neededMsg, category: "AudioManager")
-                // Enqueue high-priority task for immediate transcription
-                let task = TranscriptionQueue.TranscriptionTask(
-                    bookID: bookID,
-                    startTime: chunkStartTime,
+            if !stillOnSameChapter {
+                // Check if chapters were just being loaded (might have updated the index)
+                // If so, check if any chapter matches the one we're trying to transcribe
+                let chapterStillExists = await MainActor.run {
+                    return self.chapters.contains { $0.id == chapterID }
+                }
+                
+                if !chapterStillExists {
+                    // Chapter doesn't exist anymore - user really did move
+                    let movedMsg = "🚫 [AudioManager] ensureCurrentChapterTranscribed: User moved to different chapter - chapterID=\(chapterID.uuidString)"
+                    print(movedMsg)
+                    FileLogger.shared.log(movedMsg, category: "AudioManager")
+                    return // User moved to different chapter
+                } else {
+                    // Chapter still exists, just index might have changed during load
+                    // This is okay - we can proceed with transcription
+                    let indexUpdatedMsg = "🔄 [AudioManager] ensureCurrentChapterTranscribed: Chapter index updated during load, but chapter still exists - chapterID=\(chapterID.uuidString)"
+                    print(indexUpdatedMsg)
+                    FileLogger.shared.log(indexUpdatedMsg, category: "AudioManager")
+                }
+            }
+            
+            // Check again if transcribed (might have been transcribed while waiting)
+            let isStillTranscribed = await TranscriptionDatabase.shared.isChapterTranscribed(
+                bookID: book.id,
+                chapterID: chapterID
+            )
+            let stillNeedsTranscription = !isStillTranscribed
+            
+            if stillNeedsTranscription {
+                // Get chapter again to ensure we have latest info
+                let currentChapter: Chapter? = await MainActor.run {
+                    guard self.currentChapterIndex < self.chapters.count else {
+                        return nil
+                    }
+                    return self.chapters[self.currentChapterIndex]
+                }
+                
+                guard let chapterToTranscribe = currentChapter,
+                      chapterToTranscribe.id == chapterID else {
+                    let invalidMsg = "🚫 [AudioManager] ensureCurrentChapterTranscribed: Chapter validation failed - chapterID=\(chapterID.uuidString)"
+                    print(invalidMsg)
+                    FileLogger.shared.log(invalidMsg, category: "AudioManager")
+                return
+            }
+            
+                let enqueueMsg = "🚀 [AudioManager] ensureCurrentChapterTranscribed: Enqueuing transcription - book='\(book.title)', chapter='\(chapterToTranscribe.title)', chapterID=\(chapterID.uuidString)"
+                print(enqueueMsg)
+                FileLogger.shared.log(enqueueMsg, category: "AudioManager")
+                
+                // Enqueue transcription
+                await TranscriptionQueue.shared.enqueueChapter(
+                    book: book,
+                    chapter: chapterToTranscribe,
                     priority: .high
                 )
-                await TranscriptionQueue.shared.enqueue(task)
-                let enqueuedMsg = "✅ [AudioManager] Transcription task enqueued successfully"
-                print(enqueuedMsg)
-                FileLogger.shared.log(enqueuedMsg, category: "AudioManager")
+                
+                // Queue next chapter if it exists and isn't transcribed
+                await self.queueNextChapterIfNeeded(book: book, currentChapter: chapterToTranscribe)
             } else {
-                let notNeededMsg = "ℹ️ [AudioManager] Transcription not needed at seekTime=\(seekTime)s (already covered)"
-                print(notNeededMsg)
-                FileLogger.shared.log(notNeededMsg, category: "AudioManager")
+                let transcribedWhileWaitingMsg = "✅ [AudioManager] ensureCurrentChapterTranscribed: Chapter was transcribed while waiting - chapterID=\(chapterID.uuidString)"
+                print(transcribedWhileWaitingMsg)
+                FileLogger.shared.log(transcribedWhileWaitingMsg, category: "AudioManager")
             }
         }
     }
     
+    // MARK: - Next Chapter Pre-transcription
+    
+    @available(iOS 26.0, *)
+    private func queueNextChapterIfNeeded(book: Book, currentChapter: Chapter) async {
+        // Get next chapter index
+        let nextChapterIndex: Int? = await MainActor.run {
+            guard self.currentChapterIndex >= 0,
+                  self.currentChapterIndex < self.chapters.count - 1 else {
+                return nil
+            }
+            return self.currentChapterIndex + 1
+        }
+        
+        guard let nextIndex = nextChapterIndex,
+              nextIndex < chapters.count else {
+            // No next chapter (last chapter or invalid index)
+            return
+        }
+        
+        let nextChapter: Chapter? = await MainActor.run {
+            guard nextIndex < self.chapters.count else {
+                return nil
+            }
+            return self.chapters[nextIndex]
+        }
+        
+        guard let next = nextChapter else {
+            return
+        }
+        
+        // Check if already transcribed
+        let isTranscribed = await TranscriptionDatabase.shared.isChapterTranscribed(
+            bookID: book.id,
+            chapterID: next.id
+        )
+        
+        if isTranscribed {
+            let alreadyDoneMsg = "✅ [AudioManager] Next chapter already transcribed, skipping: chapter='\(next.title)', chapterID=\(next.id.uuidString)"
+            print(alreadyDoneMsg)
+            FileLogger.shared.log(alreadyDoneMsg, category: "AudioManager")
+            return
+        }
+        
+        // Check if already queued or running
+        let isQueued = await TranscriptionQueue.shared.isChapterQueuedOrRunning(
+            bookID: book.id,
+            chapterID: next.id
+        )
+        
+        if isQueued {
+            let alreadyQueuedMsg = "⚠️ [AudioManager] Next chapter already queued/running, skipping: chapter='\(next.title)', chapterID=\(next.id.uuidString)"
+            print(alreadyQueuedMsg)
+            FileLogger.shared.log(alreadyQueuedMsg, category: "AudioManager")
+            return
+        }
+        
+        // Queue next chapter with medium priority
+        let queueNextMsg = "📋 [AudioManager] Queueing next chapter for pre-transcription: chapter='\(next.title)', chapterID=\(next.id.uuidString)"
+        print(queueNextMsg)
+        FileLogger.shared.log(queueNextMsg, category: "AudioManager")
+        
+        await TranscriptionQueue.shared.enqueueNextChapter(
+            book: book,
+            chapter: next
+        )
+    }
+    
+    @available(iOS 26.0, *)
+    func checkIncompleteTranscriptions() async {
+        guard let book = currentBook,
+              !chapters.isEmpty,
+              currentChapterIndex >= 0,
+              currentChapterIndex < chapters.count else {
+            return
+        }
+        
+        let chapter = chapters[currentChapterIndex]
+        
+        // Check if chapter was marked as transcribing but not complete
+        let isTranscribing = await TranscriptionDatabase.shared.isChapterTranscribing(
+            bookID: book.id,
+            chapterID: chapter.id
+        )
+        
+        if isTranscribing {
+            // Retry transcription
+            ensureCurrentChapterTranscribed()
+        }
+    }
+    
     deinit {
-        seekTranscriptionTask?.cancel()
+        chapterTranscriptionTask?.cancel()
         cancelSleepTimer()
         removeTimeObserver()
         statusObserver?.invalidate()
