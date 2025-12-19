@@ -329,8 +329,42 @@ struct GoogleDrivePickerView: View {
     }
     
     private func selectM4BFile(fileID: String, folderID: String) {
-        onM4BSelected?(fileID, folderID)
-        dismiss()
+        // If selected from search, we need to get the actual parent folder
+        if isSearching {
+            Task {
+                do {
+                    // Fetch file metadata to get the actual parent folder
+                    let fileMetadata = try await driveManager.getFileMetadata(fileID: fileID)
+                    
+                    // Get the first parent folder (files can have multiple parents in Google Drive)
+                    guard let parents = fileMetadata.parents, !parents.isEmpty else {
+                        await MainActor.run {
+                            errorMessage = "Unable to determine file location. The file may be in an inaccessible folder."
+                        }
+                        return
+                    }
+                    
+                    let actualFolderID = parents[0]
+                    
+                    await MainActor.run {
+                        onM4BSelected?(fileID, actualFolderID)
+                        dismiss()
+                    }
+                } catch {
+                    await MainActor.run {
+                        if let driveError = error as? GoogleDriveError {
+                            errorMessage = "Failed to locate file: \(driveError.localizedDescription)"
+                        } else {
+                            errorMessage = "Failed to locate file. Please try navigating to the file's folder instead."
+                        }
+                    }
+                }
+            }
+        } else {
+            // Not from search, use the provided folder ID directly
+            onM4BSelected?(fileID, folderID)
+            dismiss()
+        }
     }
     
     private func iconName(for file: GoogleDriveFile) -> String {

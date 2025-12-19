@@ -320,6 +320,8 @@ struct ImportView: View {
     @State private var showingDocumentPicker = false
     @State private var showingGoogleDrivePicker = false
     @State private var isImporting = false
+    @State private var errorMessage: String?
+    @State private var showingError = false
     @ObservedObject private var driveManager = GoogleDriveManager.shared
     
     var body: some View {
@@ -448,35 +450,54 @@ struct ImportView: View {
                     importBookFromGoogleDriveM4B(m4bFileID: m4bFileID, folderID: folderID)
                 }
             }
+            .alert("Import Error", isPresented: $showingError) {
+                Button("OK") {
+                    errorMessage = nil
+                }
+            } message: {
+                if let error = errorMessage {
+                    Text(error)
+                }
+            }
         }
         .navigationViewStyle(.stack)
     }
     
     private func importBook(from url: URL) {
         isImporting = true
+        errorMessage = nil
         
         Task {
-            if let book = await BookFileManager.shared.importBook(from: url) {
-                await MainActor.run {
-                    appState.books.append(book)
-                    
-                    // If cover was found during import, update the book before saving
-                    if let coverURL = book.coverImageURL {
-                        if let index = appState.books.firstIndex(where: { $0.id == book.id }) {
-                            appState.books[index].coverImageURL = coverURL
+            do {
+                if let book = await BookFileManager.shared.importBook(from: url) {
+                    await MainActor.run {
+                        appState.books.append(book)
+                        
+                        // If cover was found during import, update the book before saving
+                        if let coverURL = book.coverImageURL {
+                            if let index = appState.books.firstIndex(where: { $0.id == book.id }) {
+                                appState.books[index].coverImageURL = coverURL
+                            }
                         }
+                        
+                        PersistenceManager.shared.saveBooks(appState.books)
+                        isImporting = false
+                        dismiss()
                     }
                     
-                    PersistenceManager.shared.saveBooks(appState.books)
-                    isImporting = false
-                    dismiss()
+                    // Transcription will happen automatically when user enters a chapter
+                } else {
+                    await MainActor.run {
+                        isImporting = false
+                        errorMessage = "Failed to import book. The file may be corrupted or in an unsupported format."
+                        showingError = true
+                    }
                 }
-                
-                // Transcription will happen automatically when user enters a chapter
-            } else {
+            } catch {
                 await MainActor.run {
                     isImporting = false
-                    // Could show an error alert here
+                    errorMessage = "Failed to import book: \(error.localizedDescription)"
+                    showingError = true
                 }
             }
         }
@@ -484,29 +505,45 @@ struct ImportView: View {
     
     private func importBookFromGoogleDriveM4B(m4bFileID: String, folderID: String) {
         isImporting = true
+        errorMessage = nil
         
         Task {
-            if let book = await BookFileManager.shared.importBookFromGoogleDriveM4B(m4bFileID: m4bFileID, folderID: folderID) {
-                await MainActor.run {
-                    appState.books.append(book)
-                    
-                    // If cover was found during import, update the book before saving
-                    if let coverURL = book.coverImageURL {
-                        if let index = appState.books.firstIndex(where: { $0.id == book.id }) {
-                            appState.books[index].coverImageURL = coverURL
+            do {
+                if let book = await BookFileManager.shared.importBookFromGoogleDriveM4B(m4bFileID: m4bFileID, folderID: folderID) {
+                    await MainActor.run {
+                        appState.books.append(book)
+                        
+                        // If cover was found during import, update the book before saving
+                        if let coverURL = book.coverImageURL {
+                            if let index = appState.books.firstIndex(where: { $0.id == book.id }) {
+                                appState.books[index].coverImageURL = coverURL
+                            }
                         }
+                        
+                        PersistenceManager.shared.saveBooks(appState.books)
+                        isImporting = false
+                        dismiss()
                     }
                     
-                    PersistenceManager.shared.saveBooks(appState.books)
-                    isImporting = false
-                    dismiss()
+                    // Transcription will happen automatically when user enters a chapter
+                } else {
+                    await MainActor.run {
+                        isImporting = false
+                        errorMessage = "Failed to import book from Google Drive. Please check your connection and try again."
+                        showingError = true
+                    }
                 }
-                
-                // Transcription will happen automatically when user enters a chapter
-            } else {
+            } catch {
                 await MainActor.run {
                     isImporting = false
-                    // Could show an error alert here
+                    let errorDescription: String
+                    if let driveError = error as? GoogleDriveError {
+                        errorDescription = driveError.localizedDescription
+                    } else {
+                        errorDescription = error.localizedDescription
+                    }
+                    errorMessage = errorDescription
+                    showingError = true
                 }
             }
         }

@@ -46,10 +46,8 @@ class GoogleDriveManager: NSObject, ObservableObject {
                    grantedScopes.contains(requiredScope) {
                     self.currentUser = user
                     self.isAuthenticated = true
-                    print("✅ GoogleDrive: Restored authentication from previous session")
                 } else {
                     // User exists but doesn't have the required scope, need to re-authenticate
-                    print("🔍 GoogleDrive: User found but missing required scope, will need to sign in again")
                     self.currentUser = nil
                     self.isAuthenticated = false
                 }
@@ -62,16 +60,13 @@ class GoogleDriveManager: NSObject, ObservableObject {
                        grantedScopes.contains(requiredScope) {
                         self.currentUser = user
                         self.isAuthenticated = true
-                        print("✅ GoogleDrive: Restored authentication from current user")
                     } else {
                         self.currentUser = nil
                         self.isAuthenticated = false
-                        print("🔍 GoogleDrive: Current user found but missing required scope")
                     }
                 } else {
                     self.currentUser = nil
                     self.isAuthenticated = false
-                    print("🔍 GoogleDrive: No existing authentication found")
                 }
             }
         }
@@ -85,8 +80,6 @@ class GoogleDriveManager: NSObject, ObservableObject {
         // Request Drive API scope
         let additionalScopes = ["https://www.googleapis.com/auth/drive.readonly"]
         
-        print("🔍 GoogleDrive: Starting sign-in with scopes: \(additionalScopes)")
-        
         let result = try await GIDSignIn.sharedInstance.signIn(
             withPresenting: presentingViewController,
             hint: nil,
@@ -94,11 +87,6 @@ class GoogleDriveManager: NSObject, ObservableObject {
         )
         self.currentUser = result.user
         self.isAuthenticated = true
-        
-        print("✅ GoogleDrive: Signed in successfully")
-        if let grantedScopes = result.user.grantedScopes {
-            print("✅ GoogleDrive: Granted scopes: \(grantedScopes)")
-        }
     }
     
     /// Sign out
@@ -119,10 +107,11 @@ class GoogleDriveManager: NSObject, ObservableObject {
         // Get access token (will be refreshed automatically if needed)
         let accessToken = user.accessToken.tokenString
         let encodedFolderID = folderID.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? folderID
-        let urlString = "https://www.googleapis.com/drive/v3/files?q='\(encodedFolderID)'+in+parents+and+trashed=false&fields=files(id,name,mimeType,size,shortcutDetails)"
         
-        print("🔍 GoogleDrive: Listing files in folder: \(folderID)")
-        print("🔍 GoogleDrive: URL: \(urlString)")
+        // For shared files, we need to use 'sharedWithMe' or check permissions
+        // Note: When listing files in a shared folder, we use the folder ID directly
+        let urlString = "https://www.googleapis.com/drive/v3/files?q='\(encodedFolderID)'+in+parents+and+trashed=false&fields=files(id,name,mimeType,size,shortcutDetails,parents)"
+        
         
         guard let url = URL(string: urlString) else {
             print("❌ GoogleDrive: Invalid URL")
@@ -157,8 +146,6 @@ class GoogleDriveManager: NSObject, ObservableObject {
             }
             
             let driveResponse = try JSONDecoder().decode(GoogleDriveFileListResponse.self, from: data)
-            print("✅ GoogleDrive: Found \(driveResponse.files.count) files")
-            
             return driveResponse.files
         } catch let error as GoogleDriveError {
             throw error
@@ -181,11 +168,7 @@ class GoogleDriveManager: NSObject, ObservableObject {
         let encodedQuery = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? query
         let urlString = "https://www.googleapis.com/drive/v3/files?q=\(encodedQuery)&fields=files(id,name,mimeType,size,shortcutDetails)"
         
-        print("🔍 GoogleDrive: Listing shared folders")
-        print("🔍 GoogleDrive: URL: \(urlString)")
-        
         guard let url = URL(string: urlString) else {
-            print("❌ GoogleDrive: Invalid URL")
             throw GoogleDriveError.downloadFailed
         }
         
@@ -197,11 +180,8 @@ class GoogleDriveManager: NSObject, ObservableObject {
             let (data, response) = try await URLSession.shared.data(for: request)
             
             guard let httpResponse = response as? HTTPURLResponse else {
-                print("❌ GoogleDrive: Invalid HTTP response")
                 throw GoogleDriveError.downloadFailed
             }
-            
-            print("🔍 GoogleDrive: HTTP Status: \(httpResponse.statusCode)")
             
             guard httpResponse.statusCode == 200 else {
                 // Try to decode error response
@@ -217,8 +197,6 @@ class GoogleDriveManager: NSObject, ObservableObject {
             }
             
             let driveResponse = try JSONDecoder().decode(GoogleDriveFileListResponse.self, from: data)
-            print("✅ GoogleDrive: Found \(driveResponse.files.count) shared folders")
-            
             return driveResponse.files
         } catch let error as GoogleDriveError {
             throw error
@@ -233,6 +211,9 @@ class GoogleDriveManager: NSObject, ObservableObject {
         guard let user = currentUser else {
             throw GoogleDriveError.notAuthenticated
         }
+        
+        // Check available disk space before starting download
+        let availableSpace = getAvailableDiskSpace()
         
         let accessToken = user.accessToken.tokenString
         let urlString = "https://www.googleapis.com/drive/v3/files/\(fileID)?alt=media"
@@ -249,16 +230,49 @@ class GoogleDriveManager: NSObject, ObservableObject {
             self.downloadProgress = 0.0
         }
         
-        let (asyncBytes, response) = try await URLSession.shared.bytes(for: request)
-        
-        guard let httpResponse = response as? HTTPURLResponse,
-              httpResponse.statusCode == 200 else {
+        let (asyncBytes, response): (URLSession.AsyncBytes, URLResponse)
+        do {
+            (asyncBytes, response) = try await URLSession.shared.bytes(for: request)
+        } catch {
             throw GoogleDriveError.downloadFailed
+        }
+        
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw GoogleDriveError.downloadFailed
+        }
+        
+        guard httpResponse.statusCode == 200 else {
+            // Check for specific error codes
+            switch httpResponse.statusCode {
+            case 403:
+                throw GoogleDriveError.apiError(statusCode: 403, message: "Access denied. This file may be shared and you may not have download permissions.")
+            case 404:
+                throw GoogleDriveError.apiError(statusCode: 404, message: "File not found. The file may have been moved or deleted.")
+            case 507:
+                throw GoogleDriveError.apiError(statusCode: 507, message: "Insufficient storage on Google Drive.")
+            default:
+                throw GoogleDriveError.apiError(statusCode: httpResponse.statusCode, message: "Download failed with HTTP \(httpResponse.statusCode)")
+            }
+        }
+        
+        let totalBytes = httpResponse.expectedContentLength
+        
+        // Check if we have enough space (with 10% buffer)
+        if totalBytes > 0 && availableSpace > 0 {
+            let requiredSpace = totalBytes + (totalBytes / 10) // 10% buffer
+            if availableSpace < requiredSpace {
+                let errorMsg = "Insufficient disk space. Required: \(formatBytes(requiredSpace)), Available: \(formatBytes(availableSpace))"
+                throw GoogleDriveError.apiError(statusCode: 507, message: errorMsg)
+            }
         }
         
         // Create directory if needed
         let directory = destinationURL.deletingLastPathComponent()
-        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        } catch {
+            throw GoogleDriveError.downloadFailed
+        }
         
         // Remove existing file if it exists
         if FileManager.default.fileExists(atPath: destinationURL.path) {
@@ -266,52 +280,129 @@ class GoogleDriveManager: NSObject, ObservableObject {
         }
         
         // Create empty file first
-        FileManager.default.createFile(atPath: destinationURL.path, contents: nil)
+        let fileCreated = FileManager.default.createFile(atPath: destinationURL.path, contents: nil)
+        if !fileCreated {
+            throw GoogleDriveError.downloadFailed
+        }
         
         guard let fileHandle = try? FileHandle(forWritingTo: destinationURL) else {
             throw GoogleDriveError.downloadFailed
         }
-        defer { try? fileHandle.close() }
+        defer { 
+            try? fileHandle.close()
+        }
         
-        let totalBytes = httpResponse.expectedContentLength
         var buffer = Data()
         let bufferSize = 8192 // 8KB buffer
         var bytesWritten: Int64 = 0
         var lastProgressUpdate: Double = -1.0
         let progressUpdateThreshold = 0.01 // Update every 1% change
+        var lastSpaceCheck: Int64 = 0
+        let spaceCheckInterval: Int64 = 10 * 1024 * 1024 // Check every 10MB
         
-        for try await byte in asyncBytes {
-            buffer.append(byte)
-            bytesWritten += 1
-            
-            // Write in chunks for better performance
-            if buffer.count >= bufferSize {
-                try fileHandle.write(contentsOf: buffer)
-                buffer.removeAll()
+        do {
+            for try await byte in asyncBytes {
+                buffer.append(byte)
+                bytesWritten += 1
                 
-                // Update progress periodically, but throttle updates to avoid jitter
-                if totalBytes > 0 {
-                    let progress = Double(bytesWritten) / Double(totalBytes)
-                    // Only update if progress changed by at least 1%
-                    if abs(progress - lastProgressUpdate) >= progressUpdateThreshold || progress >= 1.0 {
-                        await MainActor.run {
-                            self.downloadProgress = min(progress, 1.0)
+                // Write in chunks for better performance
+                if buffer.count >= bufferSize {
+                    do {
+                        try fileHandle.write(contentsOf: buffer)
+                        buffer.removeAll()
+                        
+                        // Check disk space periodically during download
+                        if bytesWritten - lastSpaceCheck > spaceCheckInterval {
+                            let currentSpace = getAvailableDiskSpace()
+                            if currentSpace < 10 * 1024 * 1024 { // Less than 10MB
+                                print("⚠️ GoogleDrive: Low disk space warning: \(formatBytes(currentSpace))")
+                            }
+                            lastSpaceCheck = bytesWritten
                         }
-                        lastProgressUpdate = progress
+                        
+                        // Update progress periodically, but throttle updates to avoid jitter
+                        if totalBytes > 0 {
+                            let progress = Double(bytesWritten) / Double(totalBytes)
+                            // Only update if progress changed by at least 1%
+                            if abs(progress - lastProgressUpdate) >= progressUpdateThreshold || progress >= 1.0 {
+                                await MainActor.run {
+                                    self.downloadProgress = min(progress, 1.0)
+                                }
+                                lastProgressUpdate = progress
+                            }
+                        }
+                    } catch {
+                        if let nsError = error as NSError? {
+                            if nsError.domain == NSPOSIXErrorDomain {
+                                switch nsError.code {
+                                case 28: // ENOSPC - No space left on device
+                                    throw GoogleDriveError.apiError(statusCode: 507, message: "No space left on device. Please free up space and try again.")
+                                default:
+                                    break
+                                }
+                            }
+                        }
+                        throw GoogleDriveError.downloadFailed
                     }
                 }
             }
+        } catch {
+            throw error
         }
         
         // Write remaining buffer
         if !buffer.isEmpty {
-            try fileHandle.write(contentsOf: buffer)
+            do {
+                try fileHandle.write(contentsOf: buffer)
+            } catch {
+                throw GoogleDriveError.downloadFailed
+            }
+        }
+        
+        // Verify file was written
+        if let fileAttributes = try? FileManager.default.attributesOfItem(atPath: destinationURL.path),
+           let fileSize = fileAttributes[.size] as? Int64 {
+            if totalBytes > 0 && fileSize != totalBytes {
+                print("⚠️ GoogleDrive: File size mismatch! Expected \(formatBytes(totalBytes)), got \(formatBytes(fileSize))")
+            }
         }
         
         // Final progress update
         await MainActor.run {
             self.downloadProgress = 1.0
         }
+    }
+    
+    /// Get available disk space in bytes
+    private func getAvailableDiskSpace() -> Int64 {
+        guard let documentsPath = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else {
+            return -1
+        }
+        
+        do {
+            let resourceValues = try documentsPath.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
+            if let availableCapacity = resourceValues.volumeAvailableCapacityForImportantUsage {
+                return availableCapacity
+            }
+        } catch {
+            print("⚠️ GoogleDrive: Could not get disk space: \(error)")
+        }
+        
+        // Fallback: try system attributes
+        if let systemAttributes = try? FileManager.default.attributesOfFileSystem(forPath: documentsPath.path),
+           let freeSize = systemAttributes[.systemFreeSize] as? Int64 {
+            return freeSize
+        }
+        
+        return -1
+    }
+    
+    /// Format bytes to human-readable string
+    private func formatBytes(_ bytes: Int64) -> String {
+        let formatter = ByteCountFormatter()
+        formatter.allowedUnits = [.useKB, .useMB, .useGB, .useTB]
+        formatter.countStyle = .file
+        return formatter.string(fromByteCount: bytes)
     }
     
     /// Download all files for a book from a Google Drive folder
@@ -331,7 +422,9 @@ class GoogleDriveManager: NSObject, ObservableObject {
         let files = try await listFiles(in: folderID)
         
         // Find M4B file
-        guard let m4bFile = files.first(where: { $0.name.lowercased().hasSuffix(".m4b") }) else {
+        let m4bFiles = files.filter { $0.name.lowercased().hasSuffix(".m4b") }
+        
+        guard let m4bFile = m4bFiles.first else {
             throw GoogleDriveError.noM4BFileFound
         }
         
@@ -375,7 +468,7 @@ class GoogleDriveManager: NSObject, ObservableObject {
                 self.currentDownloadFile = cueFile.name
             }
             let cueDestination = destinationDirectory.appendingPathComponent(cueFile.name)
-            try await downloadFile(fileID: cueFile.id, fileName: cueFile.name, to: cueDestination)
+            try? await downloadFile(fileID: cueFile.id, fileName: cueFile.name, to: cueDestination)
             downloadedFiles.cueFile = cueDestination
         }
         
@@ -385,7 +478,7 @@ class GoogleDriveManager: NSObject, ObservableObject {
                 self.currentDownloadFile = imageFile.name
             }
             let imageDestination = destinationDirectory.appendingPathComponent(imageFile.name)
-            try await downloadFile(fileID: imageFile.id, fileName: imageFile.name, to: imageDestination)
+            try? await downloadFile(fileID: imageFile.id, fileName: imageFile.name, to: imageDestination)
             downloadedFiles.coverImage = imageDestination
         }
         
@@ -395,7 +488,7 @@ class GoogleDriveManager: NSObject, ObservableObject {
                 self.currentDownloadFile = nfoFile.name
             }
             let nfoDestination = destinationDirectory.appendingPathComponent(nfoFile.name)
-            try await downloadFile(fileID: nfoFile.id, fileName: nfoFile.name, to: nfoDestination)
+            try? await downloadFile(fileID: nfoFile.id, fileName: nfoFile.name, to: nfoDestination)
             downloadedFiles.nfoFile = nfoDestination
         }
         
@@ -422,7 +515,9 @@ class GoogleDriveManager: NSObject, ObservableObject {
         let files = try await listFiles(in: folderID)
         
         // Find the M4B file
-        guard let m4bFile = files.first(where: { $0.id == m4bFileID && $0.name.lowercased().hasSuffix(".m4b") }) else {
+        let matchingFiles = files.filter { $0.id == m4bFileID && $0.name.lowercased().hasSuffix(".m4b") }
+        
+        guard let m4bFile = matchingFiles.first else {
             throw GoogleDriveError.noM4BFileFound
         }
         
@@ -466,7 +561,7 @@ class GoogleDriveManager: NSObject, ObservableObject {
                 self.currentDownloadFile = cueFile.name
             }
             let cueDestination = destinationDirectory.appendingPathComponent(cueFile.name)
-            try await downloadFile(fileID: cueFile.id, fileName: cueFile.name, to: cueDestination)
+            try? await downloadFile(fileID: cueFile.id, fileName: cueFile.name, to: cueDestination)
             downloadedFiles.cueFile = cueDestination
         }
         
@@ -476,7 +571,7 @@ class GoogleDriveManager: NSObject, ObservableObject {
                 self.currentDownloadFile = imageFile.name
             }
             let imageDestination = destinationDirectory.appendingPathComponent(imageFile.name)
-            try await downloadFile(fileID: imageFile.id, fileName: imageFile.name, to: imageDestination)
+            try? await downloadFile(fileID: imageFile.id, fileName: imageFile.name, to: imageDestination)
             downloadedFiles.coverImage = imageDestination
         }
         
@@ -486,7 +581,7 @@ class GoogleDriveManager: NSObject, ObservableObject {
                 self.currentDownloadFile = nfoFile.name
             }
             let nfoDestination = destinationDirectory.appendingPathComponent(nfoFile.name)
-            try await downloadFile(fileID: nfoFile.id, fileName: nfoFile.name, to: nfoDestination)
+            try? await downloadFile(fileID: nfoFile.id, fileName: nfoFile.name, to: nfoDestination)
             downloadedFiles.nfoFile = nfoDestination
         }
         
@@ -539,13 +634,53 @@ class GoogleDriveManager: NSObject, ObservableObject {
         
         let (targetData, targetResponse) = try await URLSession.shared.data(for: targetRequest)
         
-        guard let targetHttpResponse = targetResponse as? HTTPURLResponse,
-              targetHttpResponse.statusCode == 200 else {
+        guard let targetHttpResponse = targetResponse as? HTTPURLResponse else {
+            throw GoogleDriveError.downloadFailed
+        }
+        
+        guard targetHttpResponse.statusCode == 200 else {
             throw GoogleDriveError.downloadFailed
         }
         
         let target = try JSONDecoder().decode(GoogleDriveFile.self, from: targetData)
         return target
+    }
+    
+    /// Get file metadata including parent folder information
+    func getFileMetadata(fileID: String) async throws -> GoogleDriveFile {
+        guard let user = currentUser else {
+            throw GoogleDriveError.notAuthenticated
+        }
+        
+        let accessToken = user.accessToken.tokenString
+        let urlString = "https://www.googleapis.com/drive/v3/files/\(fileID)?fields=id,name,mimeType,size,shortcutDetails,parents"
+        
+        guard let url = URL(string: urlString) else {
+            throw GoogleDriveError.downloadFailed
+        }
+        
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        request.httpMethod = "GET"
+        
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            
+            guard let httpResponse = response as? HTTPURLResponse else {
+                throw GoogleDriveError.downloadFailed
+            }
+            
+            guard httpResponse.statusCode == 200 else {
+                throw GoogleDriveError.apiError(statusCode: httpResponse.statusCode, message: "Failed to get file metadata")
+            }
+            
+            let file = try JSONDecoder().decode(GoogleDriveFile.self, from: data)
+            return file
+        } catch let error as GoogleDriveError {
+            throw error
+        } catch {
+            throw GoogleDriveError.downloadFailed
+        }
     }
     
     /// Search for files and folders by name
@@ -558,13 +693,9 @@ class GoogleDriveManager: NSObject, ObservableObject {
         // Search for files/folders that match the query and are not trashed
         let searchQuery = "name contains '\(query)' and trashed=false"
         let encodedQuery = searchQuery.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? searchQuery
-        let urlString = "https://www.googleapis.com/drive/v3/files?q=\(encodedQuery)&fields=files(id,name,mimeType,size,shortcutDetails)"
-        
-        print("🔍 GoogleDrive: Searching for: \(query)")
-        print("🔍 GoogleDrive: URL: \(urlString)")
+        let urlString = "https://www.googleapis.com/drive/v3/files?q=\(encodedQuery)&fields=files(id,name,mimeType,size,shortcutDetails,parents)"
         
         guard let url = URL(string: urlString) else {
-            print("❌ GoogleDrive: Invalid URL")
             throw GoogleDriveError.downloadFailed
         }
         
@@ -576,11 +707,8 @@ class GoogleDriveManager: NSObject, ObservableObject {
             let (data, response) = try await URLSession.shared.data(for: request)
             
             guard let httpResponse = response as? HTTPURLResponse else {
-                print("❌ GoogleDrive: Invalid HTTP response")
                 throw GoogleDriveError.downloadFailed
             }
-            
-            print("🔍 GoogleDrive: HTTP Status: \(httpResponse.statusCode)")
             
             guard httpResponse.statusCode == 200 else {
                 // Try to decode error response
@@ -596,8 +724,6 @@ class GoogleDriveManager: NSObject, ObservableObject {
             }
             
             let driveResponse = try JSONDecoder().decode(GoogleDriveFileListResponse.self, from: data)
-            print("✅ GoogleDrive: Found \(driveResponse.files.count) search results")
-            
             return driveResponse.files
         } catch let error as GoogleDriveError {
             throw error
@@ -616,6 +742,7 @@ struct GoogleDriveFile: Codable {
     let mimeType: String
     let size: String?
     let shortcutDetails: ShortcutDetails?
+    let parents: [String]?
     
     struct ShortcutDetails: Codable {
         let targetId: String
@@ -647,19 +774,33 @@ enum GoogleDriveError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .notAuthenticated:
-            return "Please sign in to Google Drive first"
+            return "Please sign in to Google Drive first to import books."
         case .authenticationFailed:
-            return "Failed to authenticate with Google Drive"
+            return "Failed to sign in to Google Drive. Please try again."
         case .invalidConfiguration:
-            return "Invalid Google Drive configuration"
+            return "Google Drive is not properly configured. Please contact support."
         case .downloadFailed:
-            return "Failed to download file from Google Drive"
+            return "Failed to download the book from Google Drive. Please check your internet connection and try again."
         case .noM4BFileFound:
-            return "No M4B file found in the selected folder"
+            return "No audiobook file (.m4b) found in the selected location. Please make sure you're selecting a folder or file that contains an M4B audiobook file."
         case .notImplemented:
-            return "Google Drive integration not yet implemented. Please add Google Sign-In SDK first."
+            return "Google Drive integration is not available. Please contact support."
         case .apiError(let statusCode, let message):
-            return "Google Drive API error (\(statusCode)): \(message)"
+            switch statusCode {
+            case 403:
+                return "Access denied. You may not have permission to access this file, or it may be in a shared folder that requires different access. Try navigating to the file's folder instead of using search."
+            case 404:
+                return "File not found. The file may have been moved, deleted, or you may not have access to it."
+            case 507:
+                return "Insufficient storage. Please free up space on your device and try again."
+            case 401:
+                return "Authentication expired. Please sign out and sign back in to Google Drive."
+            default:
+                if !message.isEmpty && message != "HTTP \(statusCode)" {
+                    return "Google Drive error: \(message)"
+                }
+                return "Google Drive error (code \(statusCode)). Please try again or contact support if the problem persists."
+            }
         }
     }
 }

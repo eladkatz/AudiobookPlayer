@@ -503,6 +503,7 @@ The app follows a **Model-View-ViewModel (MVVM)** pattern with manager classes h
   - File listing (folders, files, and shortcuts)
   - M4B file selection
   - Automatic related file discovery
+  - **Smart folder detection**: When selecting files from search results, automatically fetches the file's actual parent folder ID to ensure correct import location
 - **Navigation**: Uses navigation stack to browse folders, supports shortcuts and search results
 
 #### `DocumentPicker`
@@ -554,6 +555,10 @@ GoogleDrivePickerView
     ├─→ GoogleDriveManager.signIn() (if not authenticated)
     ├─→ GoogleDriveManager.listFiles() (browse folders)
     └─→ User selects M4B file
+    │
+    ├─→ If selected from search results:
+    │   └─→ GoogleDriveManager.getFileMetadata() (fetches parent folder ID)
+    │       └─→ Uses actual parent folder ID instead of search context
     │
     ▼
 ImportView.importBookFromGoogleDriveM4B()

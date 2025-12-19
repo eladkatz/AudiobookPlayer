@@ -114,7 +114,6 @@ class BookFileManager {
             
             // Ensure we have the M4B file
             guard let m4bFile = downloadedFiles.m4bFile else {
-                print("No M4B file found in downloaded files")
                 return nil
             }
             
@@ -158,7 +157,6 @@ class BookFileManager {
             return book
             
         } catch {
-            print("Failed to import book from Google Drive: \(error)")
             return nil
         }
     }
@@ -230,7 +228,6 @@ class BookFileManager {
             return book
             
         } catch {
-            print("Failed to import book from Google Drive: \(error)")
             return nil
         }
     }
