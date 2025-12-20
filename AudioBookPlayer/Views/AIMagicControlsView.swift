@@ -48,10 +48,27 @@ struct AIMagicControlsView: View {
         }
         .onChange(of: transcriptionManager.isTranscribing) { oldValue, newValue in
             // When transcription completes (transitions from true to false), reload sentences
+            // This is a fallback - primary reload happens via notification
             if oldValue == true && newValue == false {
-                print("🔄 [AIMagicControlsView] Transcription completed - reloading sentences for current chapter")
+                print("🔄 [AIMagicControlsView] Transcription completed (via isTranscribing change) - reloading sentences for current chapter")
                 loadSentencesForCurrentChapter()
             }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .chapterTranscriptionCompleted)) { notification in
+            // When a chapter transcription completes, check if it's the current chapter
+            // If yes, reload sentences immediately (no race condition with next chapter starting)
+            guard let bookIDString = notification.userInfo?["bookID"] as? String,
+                  let bookID = UUID(uuidString: bookIDString),
+                  let completedChapterIndex = notification.userInfo?["chapterIndex"] as? Int,
+                  let currentBook = appState.currentBook,
+                  currentBook.id == bookID,
+                  audioManager.currentChapterIndex == completedChapterIndex else {
+                // Not the current chapter - ignore
+                return
+            }
+            
+            print("🔄 [AIMagicControlsView] Current chapter transcription completed (chapterIndex=\(completedChapterIndex)) - reloading sentences immediately")
+            loadSentencesForCurrentChapter()
         }
         .onChange(of: audioManager.currentTime) { oldTime, newTime in
             updateCurrentSentence(for: newTime)
@@ -64,19 +81,11 @@ struct AIMagicControlsView: View {
     
     // Check if the current chapter is the one being transcribed
     private var isCurrentChapterTranscribing: Bool {
-        guard let currentChapterID = getCurrentChapterID(),
-              let transcribingChapterID = transcriptionManager.currentTranscribingChapterID else {
+        guard let transcribingChapterIndex = transcriptionManager.currentTranscribingChapterIndex else {
             return false
         }
-        return currentChapterID == transcribingChapterID
-    }
-    
-    private func getCurrentChapterID() -> UUID? {
         let currentChapterIndex = audioManager.currentChapterIndex
-        guard currentChapterIndex >= 0 && currentChapterIndex < audioManager.chapters.count else {
-            return nil
-        }
-        return audioManager.chapters[currentChapterIndex].id
+        return currentChapterIndex >= 0 && currentChapterIndex == transcribingChapterIndex
     }
     
     private func updateCurrentSentence(for time: TimeInterval) {
@@ -143,7 +152,7 @@ struct AIMagicControlsView: View {
             // Load sentences for current chapter
             let sentences = await transcriptionManager.loadSentencesForChapter(
                 bookID: book.id,
-                chapterID: chapter.id
+                chapterIndex: audioManager.currentChapterIndex
             )
         
             // Update UI

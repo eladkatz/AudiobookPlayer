@@ -219,6 +219,12 @@ The app follows a **Model-View-ViewModel (MVVM)** pattern with manager classes h
 - **Purpose**: Manages book file operations
 - **Key Methods**:
   - `importBook(from url: URL)`: Imports M4B file from local storage
+  - `importBookFromGoogleDriveM4B(m4bFileID:folderID:)`: Imports book from Google Drive
+  - `queueFirstChapterTranscription(for:)`: Queues first chapter transcription after import (iOS 26+)
+    - Parses chapters using ChapterParser
+    - Checks if first chapter already transcribed
+    - Queues with `.low` priority (doesn't block user actions)
+    - Runs in background, silent failures
     - Copies file to app's Documents/Books directory
     - Extracts duration from audio file
     - Automatically searches and downloads cover image if not present
@@ -229,6 +235,33 @@ The app follows a **Model-View-ViewModel (MVVM)** pattern with manager classes h
     - Automatically searches and downloads cover image if not present
     - Returns `Book` object
   - `getBooksDirectory()`: Returns path to Books directory
+
+#### `ChapterParser` (ChapterParser.swift)
+- **Location**: `AudioBookPlayer/Managers/ChapterParser.swift`
+- **Type**: Singleton
+- **Purpose**: Shared utility for parsing chapters from audiobook files
+- **Chapter Source Priority (CRITICAL):**
+  1. **M4B embedded metadata** (highest priority - when implemented)
+  2. **CUE file chapters** (when implemented)
+  3. **Multiple MP3 files** (when implemented - each file = one chapter)
+  4. **Simulated chapters** (LAST RESORT - only if no other source available)
+- **Risk Mitigation:**
+  - **NEVER** merge multiple chapter sources (e.g., CUE + simulated)
+  - If CUE file exists, use ONLY CUE file chapters
+  - If M4B metadata exists, use ONLY M4B chapters
+  - Simulated chapters are ONLY used when NO other chapter source is available
+  - This ensures chapter indices remain stable across app sessions
+  - Mixing sources would cause chapter index mismatches and transcription data loss
+- **Key Methods**:
+  - `parseChapters(from:duration:bookID:)` - Parses chapters from AVAsset and duration
+    - Attempts to parse from M4B metadata (when implemented)
+    - Falls back to CUE file parsing (when implemented)
+    - Falls back to multiple file detection (when implemented)
+    - LAST RESORT: Generates simulated chapters if enabled and no other source available
+    - Returns array of Chapter objects, sorted by startTime
+- **Used By**:
+  - `AudioManager` - For parsing chapters during book load
+  - `BookFileManager` - For parsing chapters after import to queue first chapter transcription
 
 #### `CoverImageManager`
 - **Location**: `AudioBookPlayer/Managers/CoverImageManager.swift`
@@ -464,6 +497,79 @@ The app follows a **Model-View-ViewModel (MVVM)** pattern with manager classes h
 - Observes `audioManager.isPlaying` for highlighting control
 - Calls `TranscriptionQueue` for buffer monitoring and seek-triggered transcription
 
+#### `TranscriptionDebugDashboardView`
+- **Location**: `AudioBookPlayer/Views/TranscriptionDebugDashboardView.swift`
+- **Purpose**: Debug dashboard for monitoring transcription instances and queue status
+- **Availability**: iOS 26.0+ only
+- **Access**: Available via gear icon button in `PlayerView` (top right)
+
+**Key Features**:
+- Real-time metrics display (total instances, running, completed, failed, average duration, battery impact)
+- Queue status monitoring (queued tasks, running tasks, max concurrent)
+- Running instances list with detailed information
+- All instances history (reversed chronological order)
+- Auto-refresh every 1 second
+
+**Instance Information Display**:
+- Book title (bold, subheadline)
+- Chapter title and time range (caption, secondary color)
+- Status indicator (color-coded circle: orange=running, green=completed, red=failed, gray=cancelled)
+- Start/end timestamps
+- Duration (for completed instances)
+- Sentence count
+- Error messages (for failed instances)
+
+**Key Properties**:
+- `@ObservedObject private var tracker = TranscriptionInstanceTracker.shared`: Instance tracker
+- `@State private var queuedTasks: [TranscriptionQueue.TranscriptionTask]`: Current queue state
+- `@State private var runningTasks: [TranscriptionQueue.TranscriptionTask]`: Currently running tasks
+- `@State private var queueStatus: (queued: Int, running: Int, maxConcurrent: Int)`: Queue metrics
+- `@State private var refreshTimer: Timer?`: Auto-refresh timer
+
+**Integration Points**:
+- Accessed from `PlayerView` via debug button (gearshape icon)
+- Displays data from `TranscriptionInstanceTracker` and `TranscriptionQueue`
+
+#### `TranscriptionInstanceTracker`
+- **Location**: `AudioBookPlayer/Managers/TranscriptionInstanceTracker.swift`
+- **Type**: Singleton (`ObservableObject`)
+- **Purpose**: Tracks lifecycle of all transcription instances for debugging and monitoring
+- **Availability**: iOS 26.0+ only
+
+**Key Properties**:
+- `@Published private(set) var instances: [TranscriptionInstance]`: All tracked instances
+- `@Published private(set) var updateTrigger: Int`: Force UI updates counter
+
+**TranscriptionInstance Structure**:
+- `id: UUID`: Unique instance identifier
+- `bookTitle: String`: Book title
+- `chapterTitle: String`: Chapter title (e.g., "Chapter 1", "Chapter 14")
+- `startTime: TimeInterval`: Audio time range start
+- `endTime: TimeInterval`: Audio time range end
+- `startedAt: Date`: When transcription started
+- `endedAt: Date?`: When transcription ended (nil if still running)
+- `status: InstanceStatus`: Current status (running, completed, failed, cancelled)
+- `sentenceCount: Int`: Number of sentences transcribed
+- `errorMessage: String?`: Error message if failed
+
+**Key Methods**:
+- `startInstance(bookTitle:chapterTitle:startTime:endTime:) -> UUID`: Creates and tracks new instance
+- `completeInstance(id:sentenceCount:)`: Marks instance as completed with sentence count
+- `failInstance(id:error:)`: Marks instance as failed with error message
+- `cancelInstance(id:)`: Marks instance as cancelled
+
+**Computed Properties**:
+- `runningInstances: [TranscriptionInstance]`: Currently running instances
+- `completedInstances: [TranscriptionInstance]`: Successfully completed instances
+- `failedInstances: [TranscriptionInstance]`: Failed instances
+- `totalRunningCount: Int`: Count of running instances
+- `averageDuration: TimeInterval`: Average duration of completed instances
+- `estimatedBatteryImpact: String`: Human-readable battery impact estimate
+
+**Integration Points**:
+- Called from `TranscriptionManager.transcribeChapter()` to track instance lifecycle
+- Observed by `TranscriptionDebugDashboardView` for display
+
 
 #### `SleepTimerFullScreenView`
 - **Location**: `AudioBookPlayer/Views/SleepTimerFullScreenView.swift`
@@ -541,7 +647,13 @@ AppState.books.append(book)
     ▼
 PersistenceManager.saveBooks(books)
     │
-    └─→ Saved to UserDefaults
+    ├─→ Saved to UserDefaults
+    │
+    └─→ Background: BookFileManager.queueFirstChapterTranscription() (iOS 26+)
+        ├─→ Parses chapters using ChapterParser
+        ├─→ Checks if first chapter already transcribed
+        └─→ Queues first chapter transcription with .low priority
+            └─→ TranscriptionQueue processes in background
 ```
 
 ### Google Drive Import Flow
@@ -582,6 +694,12 @@ AppState.books.append(book)
     │
     ▼
 PersistenceManager.saveBooks(books)
+    │
+    └─→ Background: BookFileManager.queueFirstChapterTranscription() (iOS 26+)
+        ├─→ Parses chapters using ChapterParser
+        ├─→ Checks if first chapter already transcribed
+        └─→ Queues first chapter transcription with .low priority
+            └─→ TranscriptionQueue processes in background
 ```
 
 ### Playback Flow
@@ -709,7 +827,9 @@ BookFileManager
   ├─→ Uses FileManager (file operations)
   ├─→ Uses AVFoundation (duration extraction)
   ├─→ Uses GoogleDriveManager (for Drive imports)
-  └─→ Uses CoverImageManager (for automatic cover download)
+  ├─→ Uses CoverImageManager (for automatic cover download)
+  └─→ Uses ChapterParser (for chapter parsing after import)
+  └─→ Uses TranscriptionQueue (for auto-transcription on import, iOS 26+)
 
 CoverImageManager
   │

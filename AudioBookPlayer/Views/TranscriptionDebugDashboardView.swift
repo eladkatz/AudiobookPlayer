@@ -9,8 +9,6 @@ struct TranscriptionDebugDashboardView: View {
     @State private var runningTasks: [TranscriptionQueue.TranscriptionTask] = []
     @State private var queueStatus: (queued: Int, running: Int, maxConcurrent: Int) = (0, 0, 0)
     @State private var refreshTimer: Timer?
-    @State private var showShareSheet = false
-    @State private var logFileURL: URL?
     
     var body: some View {
         NavigationView {
@@ -27,9 +25,6 @@ struct TranscriptionDebugDashboardView: View {
                     
                     // All Instances Section
                     allInstancesSection
-                    
-                    // Export Button
-                    exportButton
                 }
                 .padding()
             }
@@ -163,82 +158,6 @@ struct TranscriptionDebugDashboardView: View {
         }
     }
     
-    // MARK: - Export Button
-    
-    private var exportButton: some View {
-        VStack(spacing: 12) {
-            Button(action: {
-                let export = tracker.flushAll()
-                // Copy to clipboard
-                UIPasteboard.general.string = export
-                print("📊 [DebugDashboard] Exported and flushed all instances. Check logs for full export.")
-            }) {
-                HStack {
-                    Image(systemName: "square.and.arrow.up")
-                    Text("Flush & Export to Logs")
-                }
-                .frame(maxWidth: .infinity)
-                .padding()
-                .background(Color.blue)
-                .foregroundColor(.white)
-                .cornerRadius(8)
-            }
-            
-            // Export log file button
-            Button(action: {
-                prepareLogFileForExport()
-            }) {
-                HStack {
-                    Image(systemName: "doc.text")
-                    Text("Export Log File")
-                }
-                .frame(maxWidth: .infinity)
-                .padding()
-                .background(Color.green)
-                .foregroundColor(.white)
-                .cornerRadius(8)
-            }
-            .sheet(isPresented: $showShareSheet) {
-                if let logFileURL = logFileURL {
-                    ShareSheet(activityItems: [logFileURL])
-                }
-            }
-            
-            // Log file path display
-            if let logPath = FileLogger.shared.getLogFilePath() {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Log File Location:")
-                        .font(.caption)
-                        .fontWeight(.semibold)
-                    Text(logPath)
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
-                        .textSelection(.enabled)
-                }
-                .padding()
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Color(.systemGray6))
-                .cornerRadius(8)
-            }
-        }
-    }
-    
-    private func prepareLogFileForExport() {
-        let logContent = FileLogger.shared.exportLogs()
-        
-        // Create a temporary file URL
-        let tempDir = FileManager.default.temporaryDirectory
-        let tempFile = tempDir.appendingPathComponent("audiobook_player_log.txt")
-        
-        do {
-            try logContent.write(to: tempFile, atomically: true, encoding: .utf8)
-            logFileURL = tempFile
-            showShareSheet = true
-        } catch {
-            print("❌ [DebugDashboard] Failed to export log file: \(error)")
-        }
-    }
-    
     // MARK: - Helper Methods
     
     private func refreshData() {
@@ -288,9 +207,14 @@ struct InstanceRow: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 statusIndicator
-                Text(instance.timeRangeFormatted)
-                    .font(.subheadline)
-                    .fontWeight(.semibold)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(instance.bookTitle)
+                        .font(.subheadline)
+                        .fontWeight(.semibold)
+                    Text("\(instance.chapterTitle) • \(instance.timeRangeFormatted)")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
                 Spacer()
             }
             
@@ -412,18 +336,4 @@ struct QueuedTaskRow: View {
     }
 }
 
-// MARK: - Share Sheet
-
-struct ShareSheet: UIViewControllerRepresentable {
-    let activityItems: [Any]
-    
-    func makeUIViewController(context: Context) -> UIActivityViewController {
-        let controller = UIActivityViewController(activityItems: activityItems, applicationActivities: nil)
-        return controller
-    }
-    
-    func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {
-        // No updates needed
-    }
-}
 

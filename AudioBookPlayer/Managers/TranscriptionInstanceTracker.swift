@@ -13,6 +13,8 @@ class TranscriptionInstanceTracker: ObservableObject {
     
     struct TranscriptionInstance: Identifiable {
         let id: UUID
+        let bookTitle: String // Book title
+        let chapterTitle: String // Chapter title (e.g., "Chapter 1", "Chapter 14")
         let startTime: TimeInterval // Audio time range start (e.g., 120.0 for 2:00)
         let endTime: TimeInterval // Audio time range end (e.g., 240.0 for 4:00)
         let startedAt: Date // When transcription started
@@ -52,9 +54,11 @@ class TranscriptionInstanceTracker: ObservableObject {
     
     // MARK: - Instance Management
     
-    func startInstance(startTime: TimeInterval, endTime: TimeInterval) -> UUID {
+    func startInstance(bookTitle: String, chapterTitle: String, startTime: TimeInterval, endTime: TimeInterval) -> UUID {
         let instance = TranscriptionInstance(
             id: UUID(),
+            bookTitle: bookTitle,
+            chapterTitle: chapterTitle,
             startTime: startTime,
             endTime: endTime,
             startedAt: Date(),
@@ -164,60 +168,5 @@ class TranscriptionInstanceTracker: ObservableObject {
         }
     }
     
-    // MARK: - Export
-    
-    func exportAllInstances() -> String {
-        let allInstances = instances
-        
-        var log = "=== TRANSCRIPTION INSTANCE TRACKER EXPORT ===\n"
-        log += "Export Date: \(Date())\n"
-        log += "Total Instances: \(allInstances.count)\n"
-        log += "Running: \(runningInstances.count)\n"
-        log += "Completed: \(completedInstances.count)\n"
-        log += "Failed: \(failedInstances.count)\n"
-        log += "Average Duration: \(String(format: "%.2f", averageDuration))s\n"
-        log += "\n=== INSTANCES ===\n\n"
-        
-        for (index, instance) in allInstances.enumerated() {
-            log += "Instance #\(index + 1)\n"
-            log += "  ID: \(instance.id.uuidString)\n"
-            log += "  Time Range: \(instance.timeRangeFormatted)\n"
-            log += "  Started At: \(instance.startedAt)\n"
-            if let endedAt = instance.endedAt {
-                log += "  Ended At: \(endedAt)\n"
-                if let duration = instance.duration {
-                    log += "  Duration: \(String(format: "%.2f", duration))s\n"
-                }
-            } else {
-                log += "  Status: STILL RUNNING\n"
-            }
-            log += "  Status: \(instance.status)\n"
-            log += "  Sentence Count: \(instance.sentenceCount)\n"
-            if let error = instance.errorMessage {
-                log += "  Error: \(error)\n"
-            }
-            log += "\n"
-        }
-        
-        log += "=== END EXPORT ===\n"
-        
-        print("📊 [TranscriptionTracker] EXPORT:\n\(log)")
-        FileLogger.shared.log("📊 [TranscriptionTracker] EXPORT:\n\(log)", category: "TranscriptionTracker")
-        
-        return log
-    }
-    
-    func flushAll() -> String {
-        let export = exportAllInstances()
-        DispatchQueue.main.async { [weak self] in
-            guard let self = self else { return }
-            self.instances.removeAll()
-            self.updateTrigger += 1
-        }
-        let message = "📊 [TranscriptionTracker] Flushed all instances"
-        print(message)
-        FileLogger.shared.log(message, category: "TranscriptionTracker")
-        return export
-    }
 }
 

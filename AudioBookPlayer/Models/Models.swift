@@ -113,7 +113,13 @@ struct PlaybackSettings: Codable {
     var skipBackwardInterval: TimeInterval
     var sleepTimerEnabled: Bool
     var sleepTimerDuration: TimeInterval
+    /// Enable simulated chapters (LAST RESORT fallback)
+    /// - Only used when NO other chapter source is available (no M4B metadata, no CUE file, not multiple files)
+    /// - Simulated chapters divide the book into equal-length segments for navigation
+    /// - **CRITICAL:** Once CUE/M4B parsing is implemented, simulated chapters should NEVER be used if those sources exist
+    /// - Mixing simulated with real chapters would break chapter indices and transcription data
     var simulateChapters: Bool
+    /// Length of each simulated chapter in seconds (only used if simulateChapters is true)
     var simulatedChapterLength: TimeInterval // In seconds
     var rewindAfterInterruption: TimeInterval // In seconds, 0-30, default 2
     
@@ -207,6 +213,14 @@ class AppState: ObservableObject {
         }
         return currentChapters[currentChapterIndex]
     }
+}
+
+// MARK: - Notification Names
+
+extension Notification.Name {
+    /// Posted when a chapter transcription completes
+    /// UserInfo: ["bookID": String, "chapterIndex": Int]
+    static let chapterTranscriptionCompleted = Notification.Name("chapterTranscriptionCompleted")
 }
 
 // MARK: - Transcription Chunk Model

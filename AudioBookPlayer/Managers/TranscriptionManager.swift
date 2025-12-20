@@ -13,7 +13,7 @@ class TranscriptionManager: ObservableObject {
     @Published var errorMessage: String?
     @Published var currentStatus: String = ""
     @Published var currentSentenceCount: Int = 0 // For progress monitoring
-    @Published var currentTranscribingChapterID: UUID? // Track which chapter is being transcribed
+    @Published var currentTranscribingChapterIndex: Int? // Track which chapter index is being transcribed
     
     private let database = TranscriptionDatabase.shared
     private var analyzer: SpeechAnalyzer?
@@ -532,10 +532,10 @@ class TranscriptionManager: ObservableObject {
     
     // MARK: - Chapter-Based Transcription Method
     
-    func transcribeChapter(book: Book, chapterID: UUID, startTime: TimeInterval, endTime: TimeInterval) async {
+    func transcribeChapter(book: Book, chapterIndex: Int, startTime: TimeInterval, endTime: TimeInterval) async {
         // Check if transcription is enabled
         guard TranscriptionSettings.shared.isEnabled else {
-            let disabledMsg = "🚫 [TranscriptionManager] Transcription is disabled - skipping transcribeChapter for book: '\(book.title)', chapterID: \(chapterID.uuidString)"
+            let disabledMsg = "🚫 [TranscriptionManager] Transcription is disabled - skipping transcribeChapter for book: '\(book.title)', chapterIndex: \(chapterIndex)"
             print(disabledMsg)
             FileLogger.shared.log(disabledMsg, category: "TranscriptionManager")
             return
@@ -543,7 +543,7 @@ class TranscriptionManager: ObservableObject {
         
         // Check for cancellation
         if Task.isCancelled {
-            let cancelMsg = "🚫 [TranscriptionManager] Transcription task cancelled before starting: book: '\(book.title)', chapterID: \(chapterID.uuidString)"
+            let cancelMsg = "🚫 [TranscriptionManager] Transcription task cancelled before starting: book: '\(book.title)', chapterIndex: \(chapterIndex)"
             print(cancelMsg)
             FileLogger.shared.log(cancelMsg, category: "TranscriptionManager")
             return
@@ -553,20 +553,29 @@ class TranscriptionManager: ObservableObject {
         let segmentDuration = endTime - startTime
         let segmentEndTime = endTime
         
-        let startMsg = "🚀 [TranscriptionManager] CHAPTER TRANSCRIPTION STARTED: book='\(book.title)', chapterID=\(chapterID.uuidString), range=\(startTime)s-\(endTime)s"
+        let startMsg = "🚀 [TranscriptionManager] CHAPTER TRANSCRIPTION STARTED: book='\(book.title)', chapterIndex=\(chapterIndex), range=\(startTime)s-\(endTime)s"
         print(startMsg)
         FileLogger.shared.log(startMsg, category: "TranscriptionManager")
         
         // Mark chapter as transcribing
         await database.markChapterTranscribing(
             bookID: book.id,
-            chapterID: chapterID,
+            chapterIndex: chapterIndex,
             startTime: segmentStartTime,
             endTime: segmentEndTime
         )
         
+        // Get chapter title for tracking
+        // Parse chapters to find the chapter at this index
+        let asset = AVAsset(url: book.fileURL)
+        let durationSeconds = (try? await asset.load(.duration).seconds) ?? book.duration
+        let chapters = ChapterParser.shared.parseChapters(from: asset, duration: durationSeconds, bookID: book.id)
+        let chapterTitle = (chapterIndex >= 0 && chapterIndex < chapters.count) ? chapters[chapterIndex].title : "Chapter \(chapterIndex + 1)"
+        
         // Track instance start
         let instanceID = TranscriptionInstanceTracker.shared.startInstance(
+            bookTitle: book.title,
+            chapterTitle: chapterTitle,
             startTime: segmentStartTime,
             endTime: segmentEndTime
         )
@@ -577,14 +586,14 @@ class TranscriptionManager: ObservableObject {
             errorMessage = nil
             currentStatus = "Preparing transcription..."
             currentSentenceCount = 0 // Reset sentence count
-            currentTranscribingChapterID = chapterID // Track which chapter is being transcribed
+            currentTranscribingChapterIndex = chapterIndex // Track which chapter is being transcribed
         }
         
         defer {
             Task { @MainActor in
                 isTranscribing = false
                 currentSentenceCount = 0 // Reset sentence count
-                currentTranscribingChapterID = nil // Clear transcribing chapter
+                currentTranscribingChapterIndex = nil // Clear transcribing chapter
                 cleanup()
             }
         }
@@ -645,11 +654,11 @@ class TranscriptionManager: ObservableObject {
             }
             try await database.saveChapterTranscription(
                 bookID: book.id,
-                chapterID: chapterID,
+                chapterIndex: chapterIndex,
                 sentences: sentences
             )
             
-            let completeMsg1 = "✅ [TranscriptionManager] CHAPTER TRANSCRIPTION COMPLETED: chapterID=\(chapterID.uuidString), \(sentences.count) sentences"
+            let completeMsg1 = "✅ [TranscriptionManager] CHAPTER TRANSCRIPTION COMPLETED: chapterIndex=\(chapterIndex), \(sentences.count) sentences"
             let completeMsg2 = "✅ [TranscriptionManager] Time range: \(startTimeFormatted) - \(endTimeFormatted)"
             print(completeMsg1)
             print(completeMsg2)
@@ -659,15 +668,27 @@ class TranscriptionManager: ObservableObject {
             // Track instance completion
             TranscriptionInstanceTracker.shared.completeInstance(id: instanceID, sentenceCount: sentences.count)
             
+            // Post notification that this chapter completed (for UI refresh)
+            // Include bookID and chapterIndex so listeners can check if it's the current chapter
             await MainActor.run {
                 currentStatus = "Transcription complete!"
                 progress = 1.0
+                
+                // Post notification with chapter completion info
+                NotificationCenter.default.post(
+                    name: .chapterTranscriptionCompleted,
+                    object: nil,
+                    userInfo: [
+                        "bookID": book.id.uuidString,
+                        "chapterIndex": chapterIndex
+                    ]
+                )
             }
             
         } catch {
             // Handle cancellation error
             if error is CancellationError || Task.isCancelled {
-                let cancelMsg1 = "🚫 [TranscriptionManager] CHAPTER TRANSCRIPTION CANCELLED: chapterID=\(chapterID.uuidString)"
+                let cancelMsg1 = "🚫 [TranscriptionManager] CHAPTER TRANSCRIPTION CANCELLED: chapterIndex=\(chapterIndex)"
                 let cancelMsg2 = "🚫 [TranscriptionManager] Cancellation error: \(error.localizedDescription)"
                 print(cancelMsg1)
                 print(cancelMsg2)
@@ -684,7 +705,7 @@ class TranscriptionManager: ObservableObject {
                 return
             }
             
-            let failMsg1 = "❌ [TranscriptionManager] CHAPTER TRANSCRIPTION FAILED: chapterID=\(chapterID.uuidString)"
+            let failMsg1 = "❌ [TranscriptionManager] CHAPTER TRANSCRIPTION FAILED: chapterIndex=\(chapterIndex)"
             let failMsg2 = "❌ [TranscriptionManager] Error: \(error.localizedDescription)"
             print(failMsg1)
             print(failMsg2)
@@ -701,8 +722,8 @@ class TranscriptionManager: ObservableObject {
         }
     }
     
-    func loadSentencesForChapter(bookID: UUID, chapterID: UUID) async -> [TranscribedSentence] {
-        return await database.loadSentencesForChapter(bookID: bookID, chapterID: chapterID)
+    func loadSentencesForChapter(bookID: UUID, chapterIndex: Int) async -> [TranscribedSentence] {
+        return await database.loadSentencesForChapter(bookID: bookID, chapterIndex: chapterIndex)
     }
     
     // MARK: - Phase 4: Compatibility Check

@@ -1,5 +1,6 @@
 import Foundation
 import AVFoundation
+import Speech
 
 class BookFileManager {
     static let shared = BookFileManager()
@@ -67,8 +68,10 @@ class BookFileManager {
             // Load duration asynchronously
             let duration = await loadDuration(from: asset)
             
-            // Create Book object
+            // Create Book object with deterministic ID based on file path
+            let bookID = DeterministicUUID.forBook(filePath: destinationURL.path)
             var book = Book(
+                id: bookID,
                 title: title,
                 fileURL: destinationURL,
                 duration: duration,
@@ -127,8 +130,10 @@ class BookFileManager {
             // Load duration asynchronously
             let duration = await loadDuration(from: asset)
             
-            // Create Book object with all associated files
+            // Create Book object with deterministic ID based on file path
+            let bookID = DeterministicUUID.forBook(filePath: m4bFile.path)
             var book = Book(
+                id: bookID,
                 title: title,
                 fileURL: m4bFile,
                 coverImageURL: downloadedFiles.coverImage,
@@ -198,8 +203,10 @@ class BookFileManager {
             // Load duration asynchronously
             let duration = await loadDuration(from: asset)
             
-            // Create Book object with all associated files
+            // Create Book object with deterministic ID based on file path
+            let bookID = DeterministicUUID.forBook(filePath: m4bFile.path)
             var book = Book(
+                id: bookID,
                 title: title,
                 fileURL: m4bFile,
                 coverImageURL: downloadedFiles.coverImage,
@@ -235,6 +242,91 @@ class BookFileManager {
     // MARK: - Get Books Directory
     func getBooksDirectory() -> URL {
         return documentsDirectory.appendingPathComponent("Books")
+    }
+    
+    // MARK: - Post-Import Transcription
+    
+    /// Queue first chapter transcription for a newly imported book
+    /// This runs in the background after import to ensure first chapter is ready when user opens the book
+    @available(iOS 26.0, *)
+    func queueFirstChapterTranscription(for book: Book) async {
+        // Check if transcription is enabled
+        guard TranscriptionSettings.shared.isEnabled else {
+            let disabledMsg = "🚫 [BookFileManager] Transcription is disabled - skipping first chapter transcription for book: '\(book.title)'"
+            print(disabledMsg)
+            FileLogger.shared.log(disabledMsg, category: "BookFileManager")
+            return
+        }
+        
+        // Check if SpeechTranscriber is available
+        guard await TranscriptionManager.shared.isTranscriberAvailable() else {
+            let unavailableMsg = "🚫 [BookFileManager] SpeechTranscriber is not available - skipping first chapter transcription for book: '\(book.title)'"
+            print(unavailableMsg)
+            FileLogger.shared.log(unavailableMsg, category: "BookFileManager")
+            return
+        }
+        
+        // Parse chapters from the book file
+        let asset = AVAsset(url: book.fileURL)
+        let duration = await loadDuration(from: asset)
+        
+        guard duration > 0 else {
+            let invalidDurationMsg = "⚠️ [BookFileManager] Invalid duration for book '\(book.title)' - skipping first chapter transcription"
+            print(invalidDurationMsg)
+            FileLogger.shared.log(invalidDurationMsg, category: "BookFileManager")
+            return
+        }
+        
+        let chapters = ChapterParser.shared.parseChapters(from: asset, duration: duration, bookID: book.id)
+        
+        guard let firstChapter = chapters.first else {
+            let noChaptersMsg = "⚠️ [BookFileManager] No chapters found for book '\(book.title)' - skipping first chapter transcription"
+            print(noChaptersMsg)
+            FileLogger.shared.log(noChaptersMsg, category: "BookFileManager")
+            return
+        }
+        
+        // First chapter is always at index 0
+        let firstChapterIndex = 0
+        
+        // Check if first chapter is already transcribed
+        let isTranscribed = await TranscriptionDatabase.shared.isChapterTranscribed(
+            bookID: book.id,
+            chapterIndex: firstChapterIndex
+        )
+        
+        if isTranscribed {
+            let alreadyDoneMsg = "✅ [BookFileManager] First chapter already transcribed for book '\(book.title)' - skipping"
+            print(alreadyDoneMsg)
+            FileLogger.shared.log(alreadyDoneMsg, category: "BookFileManager")
+            return
+        }
+        
+        // Check if already queued or running
+        let isQueued = await TranscriptionQueue.shared.isChapterQueuedOrRunning(
+            bookID: book.id,
+            chapterIndex: firstChapterIndex
+        )
+        
+        if isQueued {
+            let alreadyQueuedMsg = "⚠️ [BookFileManager] First chapter already queued/running for book '\(book.title)' - skipping"
+            print(alreadyQueuedMsg)
+            FileLogger.shared.log(alreadyQueuedMsg, category: "BookFileManager")
+            return
+        }
+        
+        // Queue first chapter with low priority (so user-initiated transcriptions take precedence)
+        let queueMsg = "📋 [BookFileManager] Queueing first chapter transcription for newly imported book: '\(book.title)', chapter='\(firstChapter.title)', chapterIndex=\(firstChapterIndex)"
+        print(queueMsg)
+        FileLogger.shared.log(queueMsg, category: "BookFileManager")
+        
+        await TranscriptionQueue.shared.enqueueChapter(
+            book: book,
+            chapterIndex: firstChapterIndex,
+            startTime: firstChapter.startTime,
+            endTime: firstChapter.endTime,
+            priority: .low // Low priority so it doesn't block user-initiated transcriptions
+        )
     }
 }
 

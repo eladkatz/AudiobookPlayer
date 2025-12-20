@@ -130,8 +130,6 @@ class GoogleDriveManager: NSObject, ObservableObject {
                 throw GoogleDriveError.downloadFailed
             }
             
-            print("🔍 GoogleDrive: HTTP Status: \(httpResponse.statusCode)")
-            
             guard httpResponse.statusCode == 200 else {
                 // Try to decode error response
                 if let errorData = try? JSONSerialization.jsonObject(with: data) as? [String: Any],

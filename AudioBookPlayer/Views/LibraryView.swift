@@ -485,7 +485,13 @@ struct ImportView: View {
                         dismiss()
                     }
                     
-                    // Transcription will happen automatically when user enters a chapter
+                    // Queue first chapter transcription in background (low priority)
+                    // This ensures first chapter is ready when user opens the book
+                    if #available(iOS 26.0, *) {
+                        Task.detached(priority: .utility) {
+                            await BookFileManager.shared.queueFirstChapterTranscription(for: book)
+                        }
+                    }
                 } else {
                     await MainActor.run {
                         isImporting = false
@@ -525,7 +531,13 @@ struct ImportView: View {
                         dismiss()
                     }
                     
-                    // Transcription will happen automatically when user enters a chapter
+                    // Queue first chapter transcription in background (low priority)
+                    // This ensures first chapter is ready when user opens the book
+                    if #available(iOS 26.0, *) {
+                        Task.detached(priority: .utility) {
+                            await BookFileManager.shared.queueFirstChapterTranscription(for: book)
+                        }
+                    }
                 } else {
                     await MainActor.run {
                         isImporting = false

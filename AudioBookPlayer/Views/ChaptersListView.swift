@@ -4,7 +4,7 @@ struct ChaptersListView: View {
     @Environment(\.dismiss) var dismiss
     @EnvironmentObject var appState: AppState
     @ObservedObject var audioManager = AudioManager.shared
-    @State private var transcriptionStatus: [UUID: ChapterTranscriptionStatus] = [:]
+    @State private var transcriptionStatus: [Int: ChapterTranscriptionStatus] = [:] // Key is chapter index
     
     enum ChapterTranscriptionStatus {
         case transcribed
@@ -49,7 +49,7 @@ struct ChaptersListView: View {
                                     HStack(spacing: 8) {
                                         // Transcription status indicator
                                         if #available(iOS 26.0, *) {
-                                            transcriptionStatusIcon(for: chapter.id)
+                                            transcriptionStatusIcon(for: index)
                                         }
                                         
                                         // Current chapter indicator
@@ -96,8 +96,8 @@ struct ChaptersListView: View {
     
     @available(iOS 26.0, *)
     @ViewBuilder
-    private func transcriptionStatusIcon(for chapterID: UUID) -> some View {
-        let status = transcriptionStatus[chapterID] ?? .notTranscribed
+    private func transcriptionStatusIcon(for chapterIndex: Int) -> some View {
+        let status = transcriptionStatus[chapterIndex] ?? .notTranscribed
         
         switch status {
         case .transcribed:
@@ -121,25 +121,25 @@ struct ChaptersListView: View {
         }
         
         Task {
-            var newStatus: [UUID: ChapterTranscriptionStatus] = [:]
+            var newStatus: [Int: ChapterTranscriptionStatus] = [:]
             
-            for chapter in audioManager.chapters {
+            for (index, _) in audioManager.chapters.enumerated() {
                 // Check if transcribed
                 let isTranscribed = await TranscriptionDatabase.shared.isChapterTranscribed(
                     bookID: book.id,
-                    chapterID: chapter.id
+                    chapterIndex: index
                 )
                 
                 if isTranscribed {
-                    newStatus[chapter.id] = .transcribed
+                    newStatus[index] = .transcribed
                 } else {
                     // Check if currently transcribing
                     let isTranscribing = await TranscriptionDatabase.shared.isChapterTranscribing(
                         bookID: book.id,
-                        chapterID: chapter.id
+                        chapterIndex: index
                     )
                     
-                    newStatus[chapter.id] = isTranscribing ? .transcribing : .notTranscribed
+                    newStatus[index] = isTranscribing ? .transcribing : .notTranscribed
                 }
             }
             

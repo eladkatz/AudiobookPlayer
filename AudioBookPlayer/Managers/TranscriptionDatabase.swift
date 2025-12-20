@@ -1,5 +1,6 @@
 import Foundation
 import GRDB
+import AVFoundation
 
 @available(iOS 26.0, *)
 class TranscriptionDatabase: @unchecked Sendable {
@@ -260,16 +261,18 @@ class TranscriptionDatabase: @unchecked Sendable {
         """)
         
         // Create chapter_transcriptions table
+        // NOTE: chapter_id is kept for migration purposes but chapter_index is the primary identifier
         try db.execute(sql: """
             CREATE TABLE IF NOT EXISTS chapter_transcriptions (
                 id TEXT PRIMARY KEY,
                 book_id TEXT NOT NULL,
-                chapter_id TEXT NOT NULL,
+                chapter_id TEXT,
+                chapter_index INTEGER NOT NULL,
                 start_time REAL NOT NULL,
                 end_time REAL NOT NULL,
                 is_complete INTEGER NOT NULL DEFAULT 0,
                 created_at REAL NOT NULL,
-                UNIQUE(book_id, chapter_id)
+                UNIQUE(book_id, chapter_index)
             );
         """)
         
@@ -304,7 +307,190 @@ class TranscriptionDatabase: @unchecked Sendable {
             ON chapter_transcriptions(book_id, chapter_id);
         """)
         
+        // CRITICAL: Add chapter_index columns BEFORE creating indexes on them
+        // This prevents "no such column" errors when the table exists from a previous version
+        
+        // Add chapter_index column to sentences table if it doesn't exist
+        do {
+            let columns = try Row.fetchAll(db, sql: "PRAGMA table_info(sentences)")
+            var hasChapterIndex = false
+            for row in columns {
+                if let name = row["name"] as String?, name == "chapter_index" {
+                    hasChapterIndex = true
+                    break
+                }
+            }
+            
+            if !hasChapterIndex {
+                try db.execute(sql: """
+                    ALTER TABLE sentences ADD COLUMN chapter_index INTEGER;
+                """)
+                print("✅ [TranscriptionDatabase] Added chapter_index column to sentences table")
+            }
+        } catch {
+            print("⚠️ [TranscriptionDatabase] Could not check/add chapter_index column to sentences: \(error)")
+        }
+        
+        // Add chapter_index column to chapter_transcriptions if it doesn't exist (migration)
+        do {
+            let columns = try Row.fetchAll(db, sql: "PRAGMA table_info(chapter_transcriptions)")
+            var hasChapterIndex = false
+            for row in columns {
+                if let name = row["name"] as String?, name == "chapter_index" {
+                    hasChapterIndex = true
+                    break
+                }
+            }
+            
+            if !hasChapterIndex {
+                try db.execute(sql: """
+                    ALTER TABLE chapter_transcriptions ADD COLUMN chapter_index INTEGER;
+                """)
+                print("✅ [TranscriptionDatabase] Added chapter_index column to chapter_transcriptions table")
+            }
+        } catch {
+            print("⚠️ [TranscriptionDatabase] Could not check/add chapter_index column to chapter_transcriptions: \(error)")
+        }
+        
+        // NOW create indexes on chapter_index (columns are guaranteed to exist at this point)
+        // Wrap in try-catch to prevent database recreation if index creation fails
+        do {
+            try db.execute(sql: """
+                CREATE INDEX IF NOT EXISTS idx_chapter_transcriptions_book_index 
+                ON chapter_transcriptions(book_id, chapter_index);
+            """)
+        } catch {
+            print("⚠️ [TranscriptionDatabase] Could not create index on chapter_transcriptions(book_id, chapter_index): \(error)")
+            // Don't throw - index creation failure shouldn't prevent database from working
+        }
+        
+        // Create index on sentences(book_id, chapter_index) for efficient lookups
+        do {
+            try db.execute(sql: """
+                CREATE INDEX IF NOT EXISTS idx_sentences_book_chapter_index 
+                ON sentences(book_id, chapter_index);
+            """)
+        } catch {
+            print("⚠️ [TranscriptionDatabase] Could not create index on sentences(book_id, chapter_index): \(error)")
+            // Don't throw - index creation failure shouldn't prevent database from working
+        }
+        
+        // Migration: Populate chapter_index from existing chapter_id data
+        // This matches existing transcriptions to chapter indices by time range
+        try migrateChapterIndexes(db: db)
+        
         print("✅ [TranscriptionDatabase] Tables and indexes created")
+    }
+    
+    /// Migrate existing chapter_id transcriptions to chapter_index
+    /// Matches transcriptions to chapters by time range (start_time, end_time)
+    private func migrateChapterIndexes(db: Database) throws {
+        // Check if there are any chapter_transcriptions with chapter_id but no chapter_index
+        let rowsNeedingMigration = try Row.fetchAll(
+            db,
+            sql: """
+                SELECT DISTINCT book_id, chapter_id, start_time, end_time
+                FROM chapter_transcriptions
+                WHERE chapter_id IS NOT NULL AND chapter_index IS NULL
+            """
+        )
+        
+        guard !rowsNeedingMigration.isEmpty else {
+            print("ℹ️ [TranscriptionDatabase] No chapter_index migration needed")
+            return
+        }
+        
+        print("🔄 [TranscriptionDatabase] Migrating \(rowsNeedingMigration.count) chapter transcriptions to use chapter_index...")
+        
+        // Group by book_id to parse chapters once per book
+        var bookIDs: Set<String> = []
+        for row in rowsNeedingMigration {
+            if let bookID = row["book_id"] as String? {
+                bookIDs.insert(bookID)
+            }
+        }
+        
+        var migratedCount = 0
+        
+        for bookIDString in bookIDs {
+            guard let bookUUID = UUID(uuidString: bookIDString) else {
+                continue
+            }
+            
+            // Load book from persistence
+            let books = PersistenceManager.shared.loadBooks()
+            guard let book = books.first(where: { $0.id == bookUUID }) else {
+                print("⚠️ [TranscriptionDatabase] Book not found for migration: \(bookIDString)")
+                continue
+            }
+            
+            // Parse chapters for this book
+            let asset = AVAsset(url: book.fileURL)
+            // Note: We need duration, but we can get it from existing transcriptions
+            // Get max end_time from chapter_transcriptions for this book
+            let maxEndTimeRow = try? Row.fetchOne(
+                db,
+                sql: """
+                    SELECT MAX(end_time) as max_end_time
+                    FROM chapter_transcriptions
+                    WHERE book_id = ?
+                """,
+                arguments: [bookIDString]
+            )
+            
+            guard let maxEndTime = maxEndTimeRow?["max_end_time"] as? Double, maxEndTime > 0 else {
+                print("⚠️ [TranscriptionDatabase] Could not determine duration for book: \(bookIDString)")
+                continue
+            }
+            
+            let chapters = ChapterParser.shared.parseChapters(from: asset, duration: maxEndTime, bookID: book.id)
+            
+            // Match each transcription to a chapter index by time range
+            let bookRows = rowsNeedingMigration.filter { ($0["book_id"] as? String) == bookIDString }
+            
+            for row in bookRows {
+                guard let chapterIDString = row["chapter_id"] as String?,
+                      let startTime = row["start_time"] as? Double,
+                      let endTime = row["end_time"] as? Double else {
+                    continue
+                }
+                
+                // Find chapter that contains this time range
+                // Match by finding chapter where start_time and end_time overlap
+                if let chapterIndex = chapters.firstIndex(where: { chapter in
+                    // Chapter contains the transcription time range
+                    chapter.startTime <= startTime && chapter.endTime >= endTime
+                }) {
+                    // Update chapter_transcriptions
+                    try db.execute(
+                        sql: """
+                            UPDATE chapter_transcriptions
+                            SET chapter_index = ?
+                            WHERE book_id = ? AND chapter_id = ? AND chapter_index IS NULL
+                        """,
+                        arguments: [chapterIndex, bookIDString, chapterIDString]
+                    )
+                    
+                    // Update sentences
+                    try db.execute(
+                        sql: """
+                            UPDATE sentences
+                            SET chapter_index = ?
+                            WHERE book_id = ? AND chapter_id = ? AND chapter_index IS NULL
+                        """,
+                        arguments: [chapterIndex, bookIDString, chapterIDString]
+                    )
+                    
+                    migratedCount += 1
+                } else {
+                    print("⚠️ [TranscriptionDatabase] Could not match chapter for transcription: bookID=\(bookIDString), chapterID=\(chapterIDString), range=\(startTime)-\(endTime)")
+                }
+            }
+        }
+        
+        if migratedCount > 0 {
+            print("✅ [TranscriptionDatabase] Migrated \(migratedCount) chapter transcriptions to use chapter_index")
+        }
     }
     
     // MARK: - Public Methods
@@ -638,7 +824,7 @@ class TranscriptionDatabase: @unchecked Sendable {
     
     // MARK: - Chapter Transcription Methods
     
-    func isChapterTranscribed(bookID: UUID, chapterID: UUID) async -> Bool {
+    func isChapterTranscribed(bookID: UUID, chapterIndex: Int) async -> Bool {
         await ensureInitialized()
         
         guard let dbQueue = dbQueue else {
@@ -649,16 +835,15 @@ class TranscriptionDatabase: @unchecked Sendable {
             do {
                 let isTranscribed = try dbQueue.read { db -> Bool in
                     let bookIDString = bookID.uuidString
-                    let chapterIDString = chapterID.uuidString
                     
                     let row = try Row.fetchOne(
                         db,
                         sql: """
                             SELECT is_complete
                             FROM chapter_transcriptions
-                            WHERE book_id = ? AND chapter_id = ?
+                            WHERE book_id = ? AND chapter_index = ?
                         """,
-                        arguments: [bookIDString, chapterIDString]
+                        arguments: [bookIDString, chapterIndex]
                     )
                     
                     if let isComplete = row?["is_complete"] as Int64? {
@@ -674,7 +859,7 @@ class TranscriptionDatabase: @unchecked Sendable {
         }
     }
     
-    func isChapterTranscribing(bookID: UUID, chapterID: UUID) async -> Bool {
+    func isChapterTranscribing(bookID: UUID, chapterIndex: Int) async -> Bool {
         await ensureInitialized()
         
         guard let dbQueue = dbQueue else {
@@ -685,16 +870,15 @@ class TranscriptionDatabase: @unchecked Sendable {
             do {
                 let isTranscribing = try dbQueue.read { db -> Bool in
                     let bookIDString = bookID.uuidString
-                    let chapterIDString = chapterID.uuidString
                     
                     let row = try Row.fetchOne(
                         db,
                         sql: """
                             SELECT is_complete
                             FROM chapter_transcriptions
-                            WHERE book_id = ? AND chapter_id = ?
+                            WHERE book_id = ? AND chapter_index = ?
                         """,
-                        arguments: [bookIDString, chapterIDString]
+                        arguments: [bookIDString, chapterIndex]
                     )
                     
                     if let isComplete = row?["is_complete"] as Int64? {
@@ -710,7 +894,7 @@ class TranscriptionDatabase: @unchecked Sendable {
         }
     }
     
-    func markChapterTranscribing(bookID: UUID, chapterID: UUID, startTime: TimeInterval, endTime: TimeInterval) async {
+    func markChapterTranscribing(bookID: UUID, chapterIndex: Int, startTime: TimeInterval, endTime: TimeInterval) async {
         await ensureInitialized()
         
         guard let dbQueue = dbQueue else {
@@ -721,20 +905,19 @@ class TranscriptionDatabase: @unchecked Sendable {
             do {
                 try dbQueue.write { db in
                     let bookIDString = bookID.uuidString
-                    let chapterIDString = chapterID.uuidString
                     let idString = UUID().uuidString
                     let createdAt = Date().timeIntervalSince1970
                     
                     try db.execute(
                         sql: """
                             INSERT OR REPLACE INTO chapter_transcriptions 
-                            (id, book_id, chapter_id, start_time, end_time, is_complete, created_at)
+                            (id, book_id, chapter_index, start_time, end_time, is_complete, created_at)
                             VALUES (?, ?, ?, ?, ?, 0, ?)
                         """,
-                        arguments: [idString, bookIDString, chapterIDString, startTime, endTime, createdAt]
+                        arguments: [idString, bookIDString, chapterIndex, startTime, endTime, createdAt]
                     )
                     
-                    print("💾 [TranscriptionDatabase] Marked chapter as transcribing: bookID=\(bookIDString), chapterID=\(chapterIDString)")
+                    print("💾 [TranscriptionDatabase] Marked chapter as transcribing: bookID=\(bookIDString), chapterIndex=\(chapterIndex)")
                 }
                 continuation.resume()
             } catch {
@@ -744,7 +927,7 @@ class TranscriptionDatabase: @unchecked Sendable {
         }
     }
     
-    func markChapterComplete(bookID: UUID, chapterID: UUID) async {
+    func markChapterComplete(bookID: UUID, chapterIndex: Int) async {
         await ensureInitialized()
         
         guard let dbQueue = dbQueue else {
@@ -755,18 +938,17 @@ class TranscriptionDatabase: @unchecked Sendable {
             do {
                 try dbQueue.write { db in
                     let bookIDString = bookID.uuidString
-                    let chapterIDString = chapterID.uuidString
                     
                     try db.execute(
                         sql: """
                             UPDATE chapter_transcriptions
                             SET is_complete = 1
-                            WHERE book_id = ? AND chapter_id = ?
+                            WHERE book_id = ? AND chapter_index = ?
                         """,
-                        arguments: [bookIDString, chapterIDString]
+                        arguments: [bookIDString, chapterIndex]
                     )
                     
-                    print("✅ [TranscriptionDatabase] Marked chapter as complete: bookID=\(bookIDString), chapterID=\(chapterIDString)")
+                    print("✅ [TranscriptionDatabase] Marked chapter as complete: bookID=\(bookIDString), chapterIndex=\(chapterIndex)")
                 }
                 continuation.resume()
             } catch {
@@ -776,7 +958,7 @@ class TranscriptionDatabase: @unchecked Sendable {
         }
     }
     
-    func getTranscribedChapters(bookID: UUID) async -> Set<UUID> {
+    func getTranscribedChapters(bookID: UUID) async -> Set<Int> {
         await ensureInitialized()
         
         guard let dbQueue = dbQueue else {
@@ -785,29 +967,28 @@ class TranscriptionDatabase: @unchecked Sendable {
         
         return await withCheckedContinuation { continuation in
             do {
-                let chapterIDs = try dbQueue.read { db -> Set<UUID> in
+                let chapterIndices = try dbQueue.read { db -> Set<Int> in
                     let bookIDString = bookID.uuidString
                     
                     let rows = try Row.fetchAll(
                         db,
                         sql: """
-                            SELECT chapter_id
+                            SELECT chapter_index
                             FROM chapter_transcriptions
                             WHERE book_id = ? AND is_complete = 1
                         """,
                         arguments: [bookIDString]
                     )
                     
-                    var chapterIDSet: Set<UUID> = []
+                    var chapterIndexSet: Set<Int> = []
                     for row in rows {
-                        if let chapterIDString = row["chapter_id"] as String?,
-                           let chapterID = UUID(uuidString: chapterIDString) {
-                            chapterIDSet.insert(chapterID)
+                        if let chapterIndex = row["chapter_index"] as Int64? {
+                            chapterIndexSet.insert(Int(chapterIndex))
                         }
                     }
-                    return chapterIDSet
+                    return chapterIndexSet
                 }
-                continuation.resume(returning: chapterIDs)
+                continuation.resume(returning: chapterIndices)
             } catch {
                 print("❌ [TranscriptionDatabase] Failed to get transcribed chapters: \(error)")
                 continuation.resume(returning: [])
@@ -815,7 +996,7 @@ class TranscriptionDatabase: @unchecked Sendable {
         }
     }
     
-    func loadSentencesForChapter(bookID: UUID, chapterID: UUID) async -> [TranscribedSentence] {
+    func loadSentencesForChapter(bookID: UUID, chapterIndex: Int) async -> [TranscribedSentence] {
         await ensureInitialized()
         
         guard let dbQueue = dbQueue else {
@@ -826,17 +1007,16 @@ class TranscriptionDatabase: @unchecked Sendable {
             do {
                 let sentences = try dbQueue.read { db -> [TranscribedSentence] in
                     let bookIDString = bookID.uuidString
-                    let chapterIDString = chapterID.uuidString
                     
                     let rows = try Row.fetchAll(
                         db,
                         sql: """
-                            SELECT id, book_id, text, start_time, end_time, chapter_id, created_at
+                            SELECT id, book_id, text, start_time, end_time, created_at
                             FROM sentences
-                            WHERE book_id = ? AND chapter_id = ?
+                            WHERE book_id = ? AND chapter_index = ?
                             ORDER BY start_time ASC
                         """,
-                        arguments: [bookIDString, chapterIDString]
+                        arguments: [bookIDString, chapterIndex]
                     )
                     
                     let sentences = rows.compactMap { row -> TranscribedSentence? in
@@ -855,7 +1035,7 @@ class TranscriptionDatabase: @unchecked Sendable {
                         )
                     }
                     
-                    print("💾 [TranscriptionDatabase] Loaded \(sentences.count) sentences for chapter \(chapterIDString)")
+                    print("💾 [TranscriptionDatabase] Loaded \(sentences.count) sentences for chapter index \(chapterIndex)")
                     return sentences
                 }
                 continuation.resume(returning: sentences)
@@ -866,7 +1046,7 @@ class TranscriptionDatabase: @unchecked Sendable {
         }
     }
     
-    func saveChapterTranscription(bookID: UUID, chapterID: UUID, sentences: [TranscribedSentence]) async throws {
+    func saveChapterTranscription(bookID: UUID, chapterIndex: Int, sentences: [TranscribedSentence]) async throws {
         await ensureInitialized()
         
         guard let dbQueue = dbQueue else {
@@ -877,18 +1057,17 @@ class TranscriptionDatabase: @unchecked Sendable {
             do {
                 try dbQueue.write { db in
                     let bookIDString = bookID.uuidString
-                    let chapterIDString = chapterID.uuidString
                     let createdAt = Date().timeIntervalSince1970
                     
-                    print("💾 [TranscriptionDatabase] Saving chapter transcription: bookID=\(bookIDString), chapterID=\(chapterIDString), \(sentences.count) sentences")
+                    print("💾 [TranscriptionDatabase] Saving chapter transcription: bookID=\(bookIDString), chapterIndex=\(chapterIndex), \(sentences.count) sentences")
                     
                     // Delete existing sentences for this chapter
                     try db.execute(
                         sql: """
                             DELETE FROM sentences
-                            WHERE book_id = ? AND chapter_id = ?
+                            WHERE book_id = ? AND chapter_index = ?
                         """,
-                        arguments: [bookIDString, chapterIDString]
+                        arguments: [bookIDString, chapterIndex]
                     )
                     
                     // Insert sentences
@@ -898,7 +1077,7 @@ class TranscriptionDatabase: @unchecked Sendable {
                         try db.execute(
                             sql: """
                                 INSERT OR REPLACE INTO sentences 
-                                (id, book_id, text, start_time, end_time, chapter_id, created_at)
+                                (id, book_id, text, start_time, end_time, chapter_index, created_at)
                                 VALUES (?, ?, ?, ?, ?, ?, ?)
                             """,
                             arguments: [
@@ -907,7 +1086,7 @@ class TranscriptionDatabase: @unchecked Sendable {
                                 sentence.text,
                                 sentence.startTime,
                                 sentence.endTime,
-                                chapterIDString,
+                                chapterIndex,
                                 createdAt
                             ]
                         )
@@ -918,9 +1097,9 @@ class TranscriptionDatabase: @unchecked Sendable {
                         sql: """
                             UPDATE chapter_transcriptions
                             SET is_complete = 1
-                            WHERE book_id = ? AND chapter_id = ?
+                            WHERE book_id = ? AND chapter_index = ?
                         """,
-                        arguments: [bookIDString, chapterIDString]
+                        arguments: [bookIDString, chapterIndex]
                     )
                     
                     print("✅ [TranscriptionDatabase] Saved chapter transcription successfully")

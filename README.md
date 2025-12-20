@@ -10,7 +10,7 @@ A modern iOS audiobook player app built with SwiftUI, featuring local file impor
 - 📍 **Position Tracking**: Automatically saves and restores playback position for each book
 - 📊 **Progress Display**: Chapter-based progress bars and status indicators (Started, In-Progress, Done) in library view
 - 📖 **Chapter Navigation**: Navigate by chapters with next/previous controls
-- 🔄 **Simulated Chapters**: Automatically generate chapters for books without CUE files (configurable length)
+- 🔄 **Simulated Chapters** (Last Resort): Automatically generate chapters for books without inherent chaptering (no M4B metadata, no CUE files, not multiple files) - configurable length
 - ⏱️ **Sleep Timer**: Full-screen sleep timer with visual countdown and progress indicator
 - ⚡ **Playback Speed Control**: Quick access speed selector (0.5x - 2.0x) directly from player
 - ☁️ **Google Drive Integration**: Import audiobooks directly from Google Drive with folder navigation and search
@@ -84,7 +84,10 @@ AudioBookPlayer/
 │   │   ├── PersistenceManager.swift # Data persistence
 │   │   ├── TranscriptionDatabase.swift # SQLite database for transcription storage
 │   │   ├── TranscriptionManager.swift # Transcription orchestration (iOS 26+)
-│   │   └── TranscriptionQueue.swift # Background transcription task queue (iOS 26+)
+│   │   ├── TranscriptionQueue.swift # Background transcription task queue (iOS 26+)
+│   │   ├── TranscriptionInstanceTracker.swift # Transcription instance lifecycle tracking (iOS 26+)
+│   │   ├── TranscriptionSettings.swift # Global transcription settings (iOS 26+)
+│   │   └── FileLogger.swift # Persistent file logging utility
 │   ├── Views/
 │   │   ├── LibraryView.swift       # Book library
 │   │   ├── PlayerView.swift        # Audio player interface
@@ -92,7 +95,9 @@ AudioBookPlayer/
 │   │   ├── DocumentPicker.swift    # Local file picker
 │   │   ├── GoogleDrivePickerView.swift # Google Drive file browser
 │   │   ├── SleepTimerFullScreenView.swift # Full-screen sleep timer
-│   │   └── AIMagicControlsView.swift # AI Magic transcription view (iOS 26+)
+│   │   ├── AIMagicControlsView.swift # AI Magic transcription view (iOS 26+)
+│   │   ├── TranscriptionDebugDashboardView.swift # Transcription debug dashboard (iOS 26+)
+│   │   └── ChaptersListView.swift # Chapter navigation sheet view
 │   └── Assets.xcassets/            # App icons and images
 └── Documentation/
     ├── README.md                   # This file

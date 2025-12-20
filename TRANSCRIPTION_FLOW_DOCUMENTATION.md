@@ -49,7 +49,22 @@ The transcription service transcribes audiobook audio into text sentences with t
 - **State Tracking**:
   - `chaptersLoaded` - Tracks when chapters are loaded (prevents premature transcription triggers)
 
-### 5. **AIMagicControlsView** (`AIMagicControlsView.swift`)
+### 5. **ChapterParser** (`ChapterParser.swift`)
+- **Purpose**: Shared utility for parsing chapters from audiobook files
+- **Key Methods**:
+  - `parseChapters(from:duration:)` - Parses chapters from AVAsset and duration
+- **Used By**:
+  - `AudioManager` - For parsing chapters during book load
+  - `BookFileManager` - For parsing chapters after import to queue first chapter transcription
+
+### 6. **BookFileManager** (`FileManager.swift`)
+- **Purpose**: Manages book file operations and post-import tasks
+- **Key Methods**:
+  - `importBook(from:)` - Imports M4B file from local storage
+  - `importBookFromGoogleDriveM4B(m4bFileID:folderID:)` - Imports book from Google Drive
+  - `queueFirstChapterTranscription(for:)` - Queues first chapter transcription after import (iOS 26+)
+
+### 7. **AIMagicControlsView** (`AIMagicControlsView.swift`)
 - **Purpose**: UI for displaying transcription captions
 - **Key Methods**:
   - `loadSentencesForCurrentChapter()` - Loads sentences for current chapter
@@ -92,27 +107,44 @@ The transcription service transcribes audiobook audio into text sentences with t
 4. **Transcription Triggered** → `ensureCurrentChapterTranscribed()` is called automatically
 5. **Same Flow** → Continues with transcription check and queue processing
 
+### When Book is Imported
+
+1. **Import Completes** → `BookFileManager.importBook()` or `importBookFromGoogleDriveM4B()` returns book
+2. **Book Added to Library** → Book is saved to persistence
+3. **Background Transcription** → `queueFirstChapterTranscription()` is called in background task
+4. **Chapter Parsing** → Chapters are parsed from the book file using `ChapterParser`
+5. **First Chapter Check** → Checks if first chapter is already transcribed
+6. **Queue Transcription** → If not transcribed, queues first chapter with `.low` priority
+7. **User Opens Book** → When user opens the book, first chapter transcription may already be complete or in progress
+
 ## Transcription Triggers
 
 ### Primary Triggers
 
-1. **Chapter Change** (`updateCurrentChapterIndex()`)
+1. **Book Import** (`BookFileManager.queueFirstChapterTranscription()`)
+   - When a book is successfully imported (local or Google Drive)
+   - Automatically queues first chapter transcription with `.low` priority
+   - Runs in background, doesn't block import completion
+   - Ensures first chapter is ready when user opens the book
+   - Skips if transcription is disabled, unavailable, or already transcribed
+
+2. **Chapter Change** (`updateCurrentChapterIndex()`)
    - When playback time moves to a different chapter
    - Triggers `ensureCurrentChapterTranscribed()`
    - Only if `chaptersLoaded == true`
 
-2. **Playback Start** (`play()`)
+3. **Playback Start** (`play()`)
    - When user presses play button
    - Triggers `ensureCurrentChapterTranscribed()`
    - Handles case where user switches books and hits play without chapter change
    - Only if `chaptersLoaded == true`
 
-3. **Chapters Loaded** (`parseChapters()`)
+4. **Chapters Loaded** (`parseChapters()`)
    - When chapters finish loading after book load
    - Automatically triggers `ensureCurrentChapterTranscribed()`
    - Ensures transcription starts even if user doesn't interact
 
-4. **Manual Chapter Selection** (via `ChaptersListView`)
+5. **Manual Chapter Selection** (via `ChaptersListView`)
    - When user selects a chapter from the chapter list
    - Triggers seek, which updates chapter index and triggers transcription
 
@@ -139,7 +171,7 @@ The transcription service transcribes audiobook audio into text sentences with t
 
 - **`.high`**: Current chapter (user is actively listening)
 - **`.medium`**: Next chapter (pre-transcription for seamless playback)
-- **`.low`**: Not currently used (reserved for future use)
+- **`.low`**: First chapter transcription after import (background, doesn't block user actions)
 
 ### Progress Monitoring
 
@@ -251,3 +283,56 @@ The system was migrated from a chunk-based approach (2-minute fixed chunks) to a
 - **New**: Simple chapter-based checks
 
 The database schema supports both approaches for backward compatibility, but new transcriptions use the chapter-based approach exclusively.
+
+## Auto-Transcription on Import
+
+### Overview
+
+To improve user experience, the app automatically queues the first chapter for transcription immediately after a book is imported. This ensures that when users open a newly imported book, the first chapter transcription is either already complete or in progress, eliminating the wait time for the most common use case.
+
+### Implementation Details
+
+**When it happens:**
+- After successful import from local files (`importBook(from:)`)
+- After successful import from Google Drive (`importBookFromGoogleDriveM4B()`)
+- Runs in background with `.utility` priority
+- Does not block import completion or UI
+
+**Priority:**
+- Uses `.low` priority in TranscriptionQueue
+- User-initiated transcriptions (`.high` priority) take precedence
+- Ensures background transcription doesn't interfere with active listening
+
+**Checks performed:**
+1. Transcription must be enabled (`TranscriptionSettings.shared.isEnabled`)
+2. SpeechTranscriber must be available
+3. Book must have valid duration
+4. First chapter must not already be transcribed
+5. First chapter must not already be queued or running
+
+**Error handling:**
+- All errors are logged but don't interrupt import flow
+- Silent failures - user experience is not impacted
+- Transcription will still trigger when user opens the book (fallback behavior)
+
+### User Experience
+
+**Normal flow:**
+1. User imports book → Import completes
+2. First chapter transcription starts in background (low priority)
+3. User opens book → First chapter may already be transcribed
+4. If complete: Sentences display immediately
+5. If in progress: Shows "Transcribing..." indicator
+6. If not started: Falls back to normal transcription trigger
+
+**Benefits:**
+- Zero wait time for first chapter in most cases
+- Seamless experience for new users
+- No UI changes needed - existing UI handles all states
+- Background processing doesn't impact app responsiveness
+
+**Edge cases handled:**
+- User opens book before transcription starts → Normal trigger takes over
+- User opens book while transcription in progress → Shows "Transcribing..." state
+- Transcription fails → User can still use book, transcription retries when user opens chapter
+- Multiple imports → Single-task execution ensures only one transcription at a time

@@ -37,6 +37,8 @@
 		A1000052 /* CoverImageManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000053 /* CoverImageManager.swift */; };
 		A1000054 /* SleepTimerFullScreenView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000055 /* SleepTimerFullScreenView.swift */; };
 		A1000056 /* InterruptionToastView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000057 /* InterruptionToastView.swift */; };
+		A1000058 /* ChapterParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000059 /* ChapterParser.swift */; };
+		A1000060 /* DeterministicUUID.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000061 /* DeterministicUUID.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -70,6 +72,8 @@
 		A1000053 /* CoverImageManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoverImageManager.swift; sourceTree = "<group>"; };
 		A1000055 /* SleepTimerFullScreenView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SleepTimerFullScreenView.swift; sourceTree = "<group>"; };
 		A1000057 /* InterruptionToastView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InterruptionToastView.swift; sourceTree = "<group>"; };
+		A1000059 /* ChapterParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChapterParser.swift; sourceTree = "<group>"; };
+		A1000061 /* DeterministicUUID.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeterministicUUID.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -141,6 +145,8 @@
 				A1000024 /* FileManager.swift */,
 				A1000049 /* GoogleDriveManager.swift */,
 				A1000053 /* CoverImageManager.swift */,
+				A1000059 /* ChapterParser.swift */,
+				A1000061 /* DeterministicUUID.swift */,
 			);
 			path = Managers;
 			sourceTree = "<group>";
@@ -263,6 +269,8 @@
 				9813B657FF224A0F84396355 /* TranscriptionDebugDashboardView.swift in Sources */,
 				D426636F58B540D790CADA3F /* FileLogger.swift in Sources */,
 				89C4F2EB93644D1E93FB307C /* TranscriptionSettings.swift in Sources */,
+				A1000058 /* ChapterParser.swift in Sources */,
+				A1000060 /* DeterministicUUID.swift in Sources */,
 				A1000001 /* AudioBookPlayerApp.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
